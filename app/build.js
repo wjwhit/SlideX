@@ -37,6 +37,8 @@ const appDir = path.join(res, 'app');
 fs.mkdirSync(appDir);
 for (const f of ['main.js', 'preload.js', 'editor.js', 'synctex.js']) fs.copyFileSync(path.join(here, f), path.join(appDir, f));
 run('ditto', [path.join(here, 'viewer'), path.join(appDir, 'viewer')]);
+fs.mkdirSync(path.join(appDir, 'latex'));
+fs.copyFileSync(path.join(here, '..', 'latex', 'slidemovie.sty'), path.join(appDir, 'latex', 'slidemovie.sty'));   // for drop-in movies
 { // runtime package.json: no scripts or dev dependencies
   const pkg = require('./package.json');
   fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify(

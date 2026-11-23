@@ -369,9 +369,9 @@ async function loadSync(texPath, result, frame) {
       if (!r || !isMain(r.path) || r.line < frame.start || r.line > frame.end) return null;
       return { line: r.line, exact: exact && r.line !== frame.end };
     },
-    boxesForLine(line) {
+    boxesForLine(line, opts = {}) {
       if (!exact || line < frame.start || line > frame.end) return [];
-      return st.boxesForLine(texPath, line, undefined, { lookahead: 2 });
+      return st.boxesForLine(texPath, line, undefined, opts.textOnly ? { textOnly: true } : { lookahead: 2 });
     },
   };
 }
@@ -400,4 +400,136 @@ async function pageFrames(texPath, frames) {
 
 function frameKey(f) { return f.label || '#' + f.index; }
 
-module.exports = { findSource, parseFrames, frameAtLine, compileFrame, compileDeck, saveSource, loadSync, pageFrames, frameKey, parseLog, buildDir, vrbToSource };
+/* ---------------------------------------------------------- completion */
+/* Files under the deck's folder that \includegraphics, \slidemovie and
+ * \input can take (relative paths; build and hidden folders skipped). */
+function listFiles(texPath, maxFiles = 4000) {
+  const dir = path.dirname(texPath);
+  const out = [];
+  const walk = (d, depth) => {
+    if (depth > 5 || out.length >= maxFiles) return;
+    let ents;
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      const full = path.join(d, e.name);
+      let isDir = e.isDirectory();
+      if (e.isSymbolicLink()) { try { isDir = fs.statSync(full).isDirectory(); } catch { continue; } }
+      if (isDir) walk(full, depth + 1);
+      else if (/\.(pdf|png|jpe?g|eps|svg|mp4|m4v|mov|webm|gif|tex|sty|bib)$/i.test(e.name) && full !== texPath) {
+        out.push(path.relative(dir, full).split(path.sep).join('/'));
+      }
+      if (out.length >= maxFiles) return;
+    }
+  };
+  walk(dir, 0);
+  return out.sort();
+}
+
+/* Commands and environments the deck defines: its preamble, files it \input s
+ * from its folder, and local .sty files. */
+function scanMacros(texPath, text) {
+  const dir = path.dirname(texPath);
+  const sources = [text];
+  for (const m of text.matchAll(/\\(?:input|include)\{([^}]+)\}/g)) {
+    const f = path.join(dir, m[1].endsWith('.tex') ? m[1] : m[1] + '.tex');
+    const t = safeRead(f); if (t) sources.push(t);
+  }
+  try { for (const f of fs.readdirSync(dir)) if (/\.sty$/.test(f)) { const t = safeRead(path.join(dir, f)); if (t) sources.push(t); } } catch { /* none */ }
+  const cmds = new Map(), envs = new Map(), boxes = new Set();
+  for (const t of sources) {
+    for (const m of t.matchAll(/\\(?:re)?newcommand\*?\s*\{?\\([A-Za-z@]+)\}?\s*(?:\[(\d)\])?/g)) {
+      if (m[1].includes('@')) continue;
+      cmds.set(m[1], +(m[2] || 0));
+      const body = t.slice(m.index + m[0].length, m.index + m[0].length + 700).split(/\\(?:re)?newcommand/)[0];
+      if (/\\begin\{tcolorbox\}|\\tcbox\b|\\fbox\b|\\colorbox\b/.test(body)) boxes.add(m[1]);
+    }
+    for (const m of t.matchAll(/\\(?:New|Renew|Provide)DocumentCommand\s*\{?\\([A-Za-z]+)\}?\s*\{([^}]*)\}/g)) cmds.set(m[1], (m[2].match(/[mo]/g) || []).length);
+    for (const m of t.matchAll(/\\DeclareMathOperator\*?\s*\{?\\([A-Za-z]+)\}?/g)) cmds.set(m[1], 0);
+    for (const m of t.matchAll(/\\def\\([A-Za-z]+)(#\d)*/g)) cmds.set(m[1], m[2] ? (m[0].match(/#/g) || []).length : 0);
+    for (const m of t.matchAll(/\\(?:re)?newenvironment\*?\s*\{([A-Za-z*]+)\}\s*(?:\[(\d)\])?/g)) envs.set(m[1], +(m[2] || 0));
+    for (const m of t.matchAll(/\\NewDocumentEnvironment\s*\{([A-Za-z*]+)\}\s*\{([^}]*)\}/g)) envs.set(m[1], (m[2].match(/[mo]/g) || []).length);
+  }
+  return { commands: [...cmds].map(([name, args]) => ({ name, args, box: boxes.has(name) })), environments: [...envs].map(([name, args]) => ({ name, args })) };
+}
+
+/* ------------------------------------------------------- media drop-in */
+/* Copy a dropped image or movie into <deck folder>/figures/, convert GIFs
+ * and folders of frames to H.264 mp4, and make the poster (<movie>.png) the
+ * slidemovie package shows in the PDF. Returns the path to put in the source. */
+const IMAGE_RE = /\.(pdf|png|jpe?g|eps|svg)$/i;
+const MOVIE_RE = /\.(mp4|m4v|mov|webm)$/i;
+
+function uniqueTarget(dir, name, src) {
+  const ext = path.extname(name), stem = path.basename(name, ext);
+  for (let n = 1; ; n++) {
+    const cand = path.join(dir, n === 1 ? name : `${stem}-${n}${ext}`);
+    if (!fs.existsSync(cand)) return { path: cand, reuse: false };
+    try { if (src && fs.statSync(cand).size === fs.statSync(src).size) return { path: cand, reuse: true }; } catch { /* keep looking */ }
+  }
+}
+
+async function ffmpeg(args, cwd) { return run('ffmpeg', ['-v', 'error', '-y', ...args], cwd, 600000); }
+
+async function makePoster(movie) {
+  const r = await ffmpeg(['-i', movie, '-filter_complex',
+    '[0:v]format=rgba,split[a][b];[a]drawbox=c=white:t=fill[w];[w][b]overlay,format=rgb24', '-frames:v', '1', movie + '.png'], path.dirname(movie));
+  return r.code === 0;
+}
+
+async function encodeMp4(input, out, { glob = false, fps = 10 } = {}) {
+  const args = glob ? ['-framerate', String(fps), '-pattern_type', 'glob', '-i', input] : ['-i', input];
+  args.push('-filter_complex', '[0:v]format=rgba,split[a][b];[a]drawbox=c=white:t=fill[w];[w][b]overlay,pad=ceil(iw/2)*2:ceil(ih/2)*2:color=white,format=yuv420p',
+    '-c:v', 'libx264', '-crf', '18', '-preset', 'medium', '-movflags', '+faststart', '-an', out);
+  const r = await ffmpeg(args, path.dirname(out));
+  return r.code === 0 && fs.existsSync(out);
+}
+
+function safeName(n) { return n.replace(/[\s#%&{}\\$~^]+/g, '-'); }
+
+async function importMedia(texPath, src) {
+  const dir = path.join(path.dirname(texPath), 'figures');
+  fs.mkdirSync(dir, { recursive: true });
+  const st = fs.statSync(src);
+  const notes = [];
+  let target, kind;
+  if (st.isDirectory()) {                                        // a folder of frames
+    const frames = fs.readdirSync(src).filter((f) => /\.(png|jpe?g)$/i.test(f)).sort();
+    if (!frames.length) throw new Error('That folder has no PNG or JPEG frames.');
+    const ext = path.extname(frames[0]);
+    target = uniqueTarget(dir, safeName(path.basename(src)) + '.mp4');
+    if (!await encodeMp4(path.join(src, '*' + ext), target.path, { glob: true })) throw new Error('ffmpeg could not encode the frames (is ffmpeg installed?).');
+    notes.push(`${frames.length} frames at 10 fps`);
+    kind = 'movie';
+  } else if (/\.gif$/i.test(src)) {                              // GIF -> mp4
+    const same = path.join(dir, safeName(path.basename(src, path.extname(src))) + '.mp4');
+    if (fs.existsSync(same) && fs.statSync(same).mtimeMs >= st.mtimeMs) target = { path: same, reuse: true };   // converted before
+    else target = uniqueTarget(dir, path.basename(same));
+    if (!target.reuse && !await encodeMp4(src, target.path)) throw new Error('ffmpeg could not convert the GIF (is ffmpeg installed?).');
+    if (!target.reuse) notes.push('GIF converted to mp4');
+    kind = 'movie';
+  } else if (MOVIE_RE.test(src) || IMAGE_RE.test(src)) {
+    target = uniqueTarget(dir, safeName(path.basename(src)), src);
+    if (!target.reuse) fs.copyFileSync(src, target.path);
+    kind = MOVIE_RE.test(src) ? 'movie' : 'image';
+  } else {
+    throw new Error('Drop an image (pdf, png, jpg, eps, svg), a movie (mp4, mov, webm), a GIF, or a folder of frames.');
+  }
+  if (kind === 'movie' && !fs.existsSync(target.path + '.png')) {
+    if (!await makePoster(target.path)) notes.push('no poster (is ffmpeg installed?)');
+  }
+  if (target.reuse) notes.push('already in figures/');
+  return { rel: './' + path.relative(path.dirname(texPath), target.path).split(path.sep).join('/'), kind, notes };
+}
+
+/* Make sure LaTeX finds slidemovie.sty: copy the bundled one next to the deck if not. */
+async function ensureSlidemovieSty(texPath, bundled) {
+  const dir = path.dirname(texPath);
+  const r = await run('kpsewhich', ['slidemovie.sty'], dir, 20000);
+  if (r.code === 0 && r.out.trim()) return false;
+  if (!bundled || !fs.existsSync(bundled)) return false;
+  fs.copyFileSync(bundled, path.join(dir, 'slidemovie.sty'));
+  return true;
+}
+
+module.exports = { importMedia, ensureSlidemovieSty, listFiles, scanMacros, findSource, parseFrames, frameAtLine, compileFrame, compileDeck, saveSource, loadSync, pageFrames, frameKey, parseLog, buildDir, vrbToSource };

@@ -93,6 +93,19 @@ function makeEditor(text) {
         CM.highlightActiveLine(), CM.bracketMatching(), CM.closeBrackets(), CM.highlightSelectionMatches(),
         CM.StreamLanguage.define(CM.stex), CM.syntaxHighlighting(hl), theme, CM.EditorView.lineWrapping,
         marksField,
+        CM.search({ top: true }),
+        window.SlidexComplete ? SlidexComplete.extension(() => S.info) : [],
+        CM.EditorView.domEventHandlers({
+          drop: (e, v) => {
+            if (!e.dataTransfer || !e.dataTransfer.files.length) return false;
+            e.preventDefault();
+            const pos = v.posAtCoords({ x: e.clientX, y: e.clientY });
+            dropFiles(toItems(e.dataTransfer.files), pos != null ? v.state.doc.lineAt(pos).number : null);
+            return true;
+          },
+          dragover: (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); return true; } return false; },
+        }),
+        CM.keymap.of([{ key: 'Enter', run: itemEnter }]),
         CM.keymap.of([
           { key: 'Mod-Enter', run: () => { compileFrame(); return true; } },
           { key: 'Mod-s', run: () => { save(); return true; } },
@@ -232,11 +245,17 @@ function onEdit() {
   liveTimer = setTimeout(compileFrame, 450);
 }
 
+/* Files and macros for completion; refreshed on save and deck builds. */
+async function refreshInfo() {
+  try { S.info = await api.projectInfo(view.state.doc.toString()); } catch { /* keep the last */ }
+}
+
 async function save() {
   const r = await api.save(view.state.doc.toString());
   applyFrames(r.frames);
   setDirty(false);
   status('Saved', 'good');
+  refreshInfo();
 }
 
 /* Save, then build the whole deck: the presenter reloads and the slide
@@ -257,6 +276,7 @@ async function compileDeck() {
     showErrors(r.errors || []);
     status(r.ok ? `Deck compiled in ${(r.ms / 1000).toFixed(1)} s` : `Deck: ${r.errors.length} error(s)`, r.ok ? 'good' : 'bad');
     if (r.built) await renderStrip(true);
+    refreshInfo();
     return !!r.built;
   } catch (err) {
     status('Compile failed: ' + err.message, 'bad');
@@ -423,6 +443,7 @@ async function showPreview(p) {
   $('placeholder').hidden = true;
   $('pagewrap').hidden = false;
   drawCursorBoxes();
+  findFigures();
 }
 
 async function renderPage() {
@@ -487,7 +508,498 @@ async function hoverLoop() {
   }
   hoverBusy = false;
 }
-$('preview').addEventListener('click', () => { if (S.hoverLine) gotoLine(S.hoverLine); });
+/* --------------------------------------------------------- list Enter */
+/* Enter at the end of an \item line starts a new \item at the same indent;
+ * Enter on an empty \item ends the list (the empty item is removed). */
+function itemEnter(v) {
+  const sel = v.state.selection.main;
+  if (!sel.empty) return false;
+  const line = v.state.doc.lineAt(sel.head);
+  if (sel.head !== line.to) return false;
+  const m = /^(\s*)\\item\b(\[[^\]]*\])?\s*(.*)$/.exec(line.text);
+  if (!m) return false;
+  if (!m[3].trim() && !m[2]) {                                    // empty item: end the list
+    v.dispatch({ changes: { from: line.from, to: line.to, insert: m[1].replace(/\t$|    $/, '') }, selection: { anchor: line.from + m[1].replace(/\t$|    $/, '').length } });
+    return true;
+  }
+  const ins = '\n' + m[1] + '\\item ';
+  v.dispatch({ changes: { from: sel.head, insert: ins }, selection: { anchor: sel.head + ins.length }, scrollIntoView: true });
+  return true;
+}
+
+/* ------------------------------------------------------- media drop-in */
+/* Files dropped on the code or the preview: copied into ./figures/
+ * (GIFs and frame folders become mp4 with a poster), and a line inserted. */
+/* items: [{name, path}] (from dropped File objects, see toItems). */
+function toItems(fileList) { return [...fileList].map((f) => ({ name: f.name, path: window.slidexEditor.pathForFile(f) })).filter((i) => i.path); }
+
+async function dropFiles(items, atLine) {
+  for (const file of items) {
+    const p = file.path;
+    status(`Adding ${file.name}…`);
+    const r = await api.importMedia(p);
+    if (r.error) { status(r.error, 'bad'); continue; }
+    const doc = view.state.doc;
+    const line = doc.line(atLine || cursorLine());
+    const indent = /^\s*/.exec(line.text)[0];
+    const snippet = r.kind === 'movie' ? `\\slidemovie[width=0.8\\linewidth]{${r.rel}}` : `\\includegraphics[width=0.8\\linewidth]{${r.rel}}`;
+    const changes = [{ from: line.to, insert: '\n' + indent + snippet }];
+    const text = doc.toString();
+    const bd = text.indexOf('\\begin{document}');
+    if (r.kind === 'movie' && bd > 0 && !/\\usepackage(\[[^\]]*\])?\{[^}]*slidemovie/.test(text.slice(0, bd))) {
+      changes.push({ from: bd, insert: '\\usepackage{slidemovie}  % movies that play in SlideX\n' });
+      r.notes.push('added \\usepackage{slidemovie}');
+    }
+    view.dispatch({ changes, selection: { anchor: line.to + 1 + indent.length + snippet.length } });
+    atLine = (atLine || cursorLine()) + 1;
+    status(`Added ${r.rel}` + (r.notes.length ? ' · ' + r.notes.join(', ') : ''), 'good');
+  }
+  refreshInfo();
+  view.focus();
+}
+for (const el of [$('preview')]) {
+  el.addEventListener('dragover', (e) => { if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); el.classList.add('drop'); } });
+  el.addEventListener('dragleave', () => el.classList.remove('drop'));
+  el.addEventListener('drop', (e) => { e.preventDefault(); el.classList.remove('drop'); dropFiles(toItems(e.dataTransfer.files), null); });
+}
+
+/* ------------------------------------------------ figures: resize handles */
+/* Figures and movies on the shown page: one per source line holding
+ * \includegraphics or \slidemovie, located with SyncTeX. */
+const FIG_RE = /\\(includegraphics|slidemovie)\s*(?:\[([^\]]*)\])?\s*\{/;
+S.figs = [];
+
+async function findFigures() {
+  S.figs = [];
+  drawFigs(null);
+  if (!S.preview || S.stale || !S.frame) return;
+  const doc = view.state.doc;
+  const figs = [];
+  for (let l = S.frame.start; l <= Math.min(S.frame.end, doc.lines); l++) {
+    if (!FIG_RE.test(doc.line(l).text) || /^\s*%/.test(doc.line(l).text)) continue;
+    const boxes = ((await api.boxesForLine(l)) || []).filter((b) => b.page === S.preview.page);
+    if (!boxes.length) continue;
+    const b = boxes.reduce((a, c) => (c.w * c.h > a.w * a.h ? c : a));
+    if (b.w < 4 || b.h < 4) continue;
+    figs.push({ kind: 'figure', line: l, box: b });
+  }
+  S.figs = figs.concat(await findBoxes());
+}
+
+/* ------------------------------------------------ boxes: resize handles */
+/* tcolorbox environments, and calls of the deck's own box macros (any
+ * \newcommand whose definition draws a tcolorbox, e.g. \keybox). SyncTeX
+ * records only the text inside a box, so the box is found from the union of
+ * its content, widened outward to the frame line drawn on the page. */
+function unionOf(boxes) {
+  if (!boxes.length) return null;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const b of boxes) { x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+/* The content of a box: every record of its lines, minus records that
+ * enclose other records (e.g. a \makebox wrapped around the box). */
+async function contentBox(l0, l1) {
+  const all = [];
+  for (let l = l0; l <= l1; l++) {
+    for (const b of (await api.boxesForLine(l)) || []) if (b.page === S.preview.page && b.w > 0 && b.h > 0) all.push(b);
+  }
+  const holds = (a, b) => a !== b && b.x >= a.x - 0.5 && b.y >= a.y - 0.5 && b.x + b.w <= a.x + a.w + 0.5 && b.y + b.h <= a.y + a.h + 0.5
+    && (b.w < a.w - 1 || b.h < a.h - 1);
+  return unionOf(all.filter((a) => !all.some((b) => holds(a, b))));
+}
+
+/* Walk outward from the content to the first dark pixel row/column (the
+ * box's frame), within 22 bp; otherwise pad by the usual inner margin. */
+function toFrame(u) {
+  const cv = $('pagecanvas');
+  const k = cv.width / pv.w;                          // device px per bp
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  const dark = (x, y) => {
+    if (x < 0 || y < 0 || x >= cv.width || y >= cv.height) return false;
+    const d = ctx.getImageData(Math.round(x), Math.round(y), 1, 1).data;
+    return 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2] < 190;
+  };
+  const reach = 22 * k, pad = 5;
+  const scan = (x, y, dx, dy) => {               // returns distance in bp to the frame, or null
+    for (let t = 2; t <= reach; t++) if (dark(x + dx * t, y + dy * t)) return t / k;
+    return null;
+  };
+  const cx = (u.x + u.w / 2) * k, cy = (u.y + u.h / 2) * k;
+  const L = scan(u.x * k, cy, -1, 0), R = scan((u.x + u.w) * k, cy, 1, 0);
+  const T = scan(cx, u.y * k, 0, -1), B = scan(cx, (u.y + u.h) * k, 0, 1);
+  if (L == null && R == null) {
+    // No frame outside: the records are a wrapper around the box (e.g. the
+    // \makebox of a resized \keybox). Look inward from its edges instead.
+    const inward = (x, y, dx, dy, max) => { for (let t = 0; t <= max; t++) if (dark(x + dx * t, y + dy * t)) return t / k; return null; };
+    const maxX = u.w * k * 0.45, maxY = u.h * k * 0.45;
+    const l = inward(u.x * k, cy, 1, 0, maxX), r = inward((u.x + u.w) * k - 1, cy, -1, 0, maxX);
+    const t = inward(cx, u.y * k, 0, 1, maxY), b = inward(cx, (u.y + u.h) * k - 1, 0, -1, maxY);
+    if (l != null && r != null) {
+      return { x: u.x + l, y: u.y + (t ?? 0), w: u.w - l - r, h: u.h - (t ?? 0) - (b ?? 0) };
+    }
+  }
+  return { x: u.x - (L ?? pad), y: u.y - (T ?? pad), w: u.w + (L ?? pad) + (R ?? pad), h: u.h + (T ?? pad) + (B ?? pad) };
+}
+
+function matchClose(text, open) {                  // index of the } closing the { at text[open]
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\\') { i++; continue; }
+    if (c === '%') { const nl = text.indexOf('\n', i); if (nl < 0) return -1; i = nl; continue; }
+    if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+async function findBoxes() {
+  const doc = view.state.doc;
+  const out = [];
+  const last = Math.min(S.frame.end, doc.lines);
+  // tcolorbox environments
+  for (let l = S.frame.start; l <= last; l++) {
+    const t = doc.line(l).text;
+    if (/^\s*%/.test(t) || !/\\begin\{tcolorbox\}/.test(t)) continue;
+    let depth = 0, end = null;
+    for (let k = l; k <= last; k++) {
+      const tk = doc.line(k).text;
+      depth += (tk.match(/\\begin\{tcolorbox\}/g) || []).length - (tk.match(/\\end\{tcolorbox\}/g) || []).length;
+      if (depth <= 0) { end = k; break; }
+    }
+    if (!end) continue;
+    const u = await contentBox(l + 1, end - 1);
+    if (u) out.push({ kind: 'tcolorbox', line: l, box: toFrame(u) });
+  }
+  // the deck's box macros
+  const names = ((S.info && S.info.commands) || []).filter((c) => c.box).map((c) => c.name);
+  if (names.length) {
+    const text = doc.toString();
+    const from = doc.line(S.frame.start).from, to = doc.line(last).to;
+    const re = new RegExp('\\\\(' + names.join('|') + ')\\s*\\{', 'g');
+    re.lastIndex = from;
+    let m;
+    while ((m = re.exec(text)) && m.index < to) {
+      const lineNo = doc.lineAt(m.index).number;
+      if (/^\s*%/.test(doc.line(lineNo).text)) continue;
+      const close = matchClose(text, m.index + m[0].length - 1);
+      if (close < 0) continue;
+      const u = await contentBox(lineNo, doc.lineAt(close).number);
+      if (u) out.push({ kind: 'macrobox', name: m[1], line: lineNo, at: m.index, close, box: toFrame(u) });
+    }
+  }
+  return out;
+}
+
+function figAt(x, y) {          // smallest figure box containing the point (bp)
+  let best = null;
+  for (const f of S.figs) {
+    const b = f.box;
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h && (!best || b.w * b.h < best.box.w * best.box.h)) best = f;
+  }
+  return best;
+}
+
+const figEl = document.createElement('div'); figEl.className = 'fig-outline'; figEl.hidden = true;
+const handleEl = document.createElement('div'); handleEl.className = 'fig-handle'; handleEl.title = 'Drag to resize';
+const ghostEl = document.createElement('div'); ghostEl.className = 'fig-ghost'; ghostEl.hidden = true;
+const ratioEl = document.createElement('div'); ratioEl.className = 'fig-ratio';
+figEl.appendChild(handleEl); ghostEl.appendChild(ratioEl);
+$('pagewrap').append(figEl, ghostEl);
+
+function placeBox(el, b) {
+  Object.assign(el.style, { left: b.x * pv.scale + 'px', top: b.y * pv.scale + 'px', width: b.w * pv.scale + 'px', height: b.h * pv.scale + 'px' });
+}
+function drawFigs(f) {
+  S.figHover = f;
+  figEl.hidden = !f;
+  if (f) { placeBox(figEl, f.box); figEl.classList.toggle('boxmode', f.kind !== 'figure'); }
+}
+
+let figDrag = null;
+handleEl.addEventListener('mousedown', (e) => {
+  if (!S.figHover) return;
+  e.preventDefault(); e.stopPropagation();
+  figDrag = { f: S.figHover, x0: e.clientX, y0: e.clientY, ratio: 1 };
+  ghostEl.hidden = false;
+  placeBox(ghostEl, figDrag.f.box);
+});
+addEventListener('mousemove', (e) => {
+  if (!figDrag) return;
+  const b = figDrag.f.box;
+  const rx = (b.w * pv.scale + (e.clientX - figDrag.x0)) / (b.w * pv.scale);
+  const ry = (b.h * pv.scale + (e.clientY - figDrag.y0)) / (b.h * pv.scale);
+  const isBox = figDrag.f.kind !== 'figure';                 // boxes: width only (height follows the content)
+  const ratio = Math.max(0.1, Math.min(5, isBox || Math.abs(rx - 1) > Math.abs(ry - 1) ? rx : ry));   // figures keep their aspect
+  figDrag.ratio = ratio;
+  placeBox(ghostEl, { x: b.x, y: b.y, w: b.w * ratio, h: isBox ? b.h : b.h * ratio });
+  ratioEl.textContent = '×' + ratio.toFixed(2);
+});
+addEventListener('mouseup', () => {
+  if (!figDrag) return;
+  const d = figDrag; figDrag = null;
+  ghostEl.hidden = true;
+  if (Math.abs(d.ratio - 1) > 0.01) {
+    if (d.f.kind === 'tcolorbox') resizeTcolorbox(d.f, d.ratio);
+    else if (d.f.kind === 'macrobox') resizeMacroBox(d.f, d.ratio);
+    else resizeFigure(d.f, d.ratio);
+  }
+});
+
+/* Scale a length like 0.68\linewidth, 30.92mm, {.5\textwidth} or \linewidth. */
+function scaleLength(v, ratio) {
+  const m = /^(\s*\{?\s*)([0-9]*\.?[0-9]+)?(\s*)(.*?)(\s*\}?\s*)$/.exec(v);
+  if (!m) return v;
+  const num = m[2] ? parseFloat(m[2]) : 1;
+  const unit = m[4];
+  const n = num * ratio;
+  const digits = /^\\/.test(unit) ? 2 : /^(pt|bp|px)$/.test(unit) ? 0 : 1;
+  let str = n.toFixed(digits).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+  return m[1] + str + m[3] + unit + m[5];
+}
+
+function splitOpts(s) {          // split at top-level commas
+  const out = []; let depth = 0, cur = '';
+  for (const ch of s) {
+    if (ch === '{') depth++; else if (ch === '}') depth--;
+    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
+  }
+  if (cur.trim()) out.push(cur);
+  return out;
+}
+
+function resizeFigure(f, ratio) {
+  const line = view.state.doc.line(f.line);
+  const m = FIG_RE.exec(line.text);
+  if (!m) return;
+  const opts = m[2] != null ? splitOpts(m[2]) : [];
+  let sized = false;
+  const next = opts.map((o) => {
+    const kv = /^(\s*)(width|height|scale)(\s*=\s*)(.*)$/.exec(o);
+    if (!kv) return o;
+    sized = true;
+    return kv[1] + kv[2] + kv[3] + scaleLength(kv[4], ratio);
+  });
+  if (!sized) next.unshift(`width=${Math.round(f.box.w * ratio)}bp`);
+  const optStr = '[' + next.join(',').replace(/^,/, '') + ']';
+  const start = line.from + m.index;
+  const head = '\\' + m[1];
+  const oldEnd = start + m[0].length - 1;                      // up to the {
+  view.dispatch({ changes: { from: start, to: oldEnd, insert: head + optStr } });
+  status(`Resized ×${ratio.toFixed(2)} (line ${f.line})`);
+}
+
+/* \begin{tcolorbox}[..., width=...]: scale width, or add width=<r>\linewidth. */
+function resizeTcolorbox(f, ratio) {
+  const line = view.state.doc.line(f.line);
+  const m = /\\begin\{tcolorbox\}\s*(?:\[([^\]]*)\])?/.exec(line.text);
+  if (!m) return;
+  const opts = m[1] != null ? splitOpts(m[1]) : [];
+  let sized = false;
+  const next = opts.map((o) => {
+    const kv = /^(\s*)(width)(\s*=\s*)(.*)$/.exec(o);
+    if (!kv) return o;
+    sized = true;
+    return kv[1] + kv[2] + kv[3] + scaleLength(kv[4], ratio);
+  });
+  if (!sized) next.push(`width=${ratio.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}\\linewidth`);
+  const start = line.from + m.index;
+  view.dispatch({ changes: { from: start, to: start + m[0].length, insert: '\\begin{tcolorbox}[' + next.join(',').replace(/^,/, '') + ']' } });
+  status(`Box width ×${ratio.toFixed(2)} (line ${f.line})`);
+}
+
+/* A box macro sized by \linewidth (e.g. \keybox): put this use in a centred
+ * minipage of the new width; resizing again rescales that minipage. */
+const WRAP_RE = /\\makebox\[\\linewidth\]\{\\begin\{minipage\}\{([^}]*)\}\s*$/;
+function resizeMacroBox(f, ratio) {
+  const doc = view.state.doc;
+  const text = doc.toString();
+  const before = text.slice(Math.max(0, f.at - 120), f.at);
+  const w = WRAP_RE.exec(before);
+  if (w) {
+    const valFrom = f.at - before.length + w.index + w[0].indexOf('{', w[0].indexOf('minipage}')) + 1;
+    view.dispatch({ changes: { from: valFrom, to: valFrom + w[1].length, insert: scaleLength(w[1], ratio) } });
+  } else {
+    const width = `${ratio.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}\\linewidth`;
+    view.dispatch({ changes: [
+      { from: f.at, insert: `\\makebox[\\linewidth]{\\begin{minipage}{${width}}` },
+      { from: f.close + 1, insert: '\\end{minipage}}' },
+    ] });
+  }
+  status(`\\${f.name} width ×${ratio.toFixed(2)} (line ${f.line})`);
+}
+
+/* --------------------------------------------------- click to edit text */
+const popEl = document.createElement('div'); popEl.className = 'text-pop'; popEl.hidden = true;
+const popTa = document.createElement('textarea'); popTa.spellcheck = true;
+const popHint = document.createElement('div'); popHint.className = 'text-pop-hint';
+popHint.textContent = 'Enter applies, Esc cancels, Shift-Enter for a new line';
+popEl.append(popTa, popHint);
+$('preview').appendChild(popEl);
+let popLine = null;
+let popSession = 0;                  // each box closes only itself on blur
+
+async function openTextEdit(line, anchor = null, select = null) {
+  const boxes = anchor ? [anchor] : ((await api.boxesForLine(line)) || []).filter((b) => b.page === S.preview.page);
+  const b = boxes[0];
+  if (!b) { gotoLine(line); return; }
+  const text = view.state.doc.line(line).text;
+  popSession++;
+  popLine = { line, indent: /^\s*/.exec(text)[0], original: text, box: b };
+  popTa.value = text.trim();
+  const wr = $('pagewrap').getBoundingClientRect(), pr = $('preview').getBoundingClientRect();
+  const left = Math.max(6, Math.min(wr.left - pr.left + b.x * pv.scale, pr.width - 380));
+  const top = wr.top - pr.top + (b.y + b.h) * pv.scale + 6;
+  Object.assign(popEl.style, { left: left + 'px', top: Math.min(top, pr.height - 130) + 'px',
+    width: Math.max(360, Math.min(b.w * pv.scale, pr.width - 20)) + 'px' });
+  popEl.hidden = false;
+  popTa.style.height = 'auto';
+  popTa.style.height = Math.min(220, popTa.scrollHeight + 4) + 'px';
+  popTa.focus();
+  if (select) { const i = popTa.value.indexOf(select); if (i >= 0) popTa.setSelectionRange(i, i + select.length); else popTa.select(); }
+  else popTa.select();
+  gotoLine(line, false);
+}
+function closeTextEdit(apply) {
+  if (!popLine) return;
+  const p = popLine; popLine = null;
+  popEl.hidden = true;
+  if (apply) {
+    const lineObj = view.state.doc.line(p.line);
+    if (lineObj.text === p.original) {                         // the line did not move meanwhile
+      const text = popTa.value.split('\n').map((t, i) => (i ? p.indent : '') + t).join('\n');
+      if (p.indent + text !== p.original) view.dispatch({ changes: { from: lineObj.from, to: lineObj.to, insert: p.indent + text } });
+    }
+  }
+  view.focus();
+}
+popTa.addEventListener('keydown', (e) => {
+  e.stopPropagation();
+  if (e.key === 'Escape') { e.preventDefault(); closeTextEdit(false); }
+  else if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    const p = popLine;
+    const atEnd = popTa.selectionStart === popTa.value.length && popTa.selectionEnd === popTa.value.length;
+    const item = /^\\item\b/.test(popTa.value.trim());
+    if (p && item && atEnd && popTa.value.trim() !== '\\item') {      // next item, edited in place too
+      closeTextEdit(true);
+      const at = view.state.doc.line(p.line);
+      view.dispatch({ changes: { from: at.to, insert: '\n' + p.indent + '\\item ' } });
+      const b = p.box;
+      openTextEdit(p.line + 1, { x: b.x, y: b.y + b.h + 2, w: b.w, h: b.h, page: b.page });
+      popTa.setSelectionRange(popTa.value.length, popTa.value.length);
+    } else closeTextEdit(true);
+  }
+});
+popTa.addEventListener('input', () => { popTa.style.height = 'auto'; popTa.style.height = Math.min(220, popTa.scrollHeight + 4) + 'px'; });
+popTa.addEventListener('blur', () => { const sid = popSession; setTimeout(() => { if (sid === popSession) closeTextEdit(true); }, 0); });
+
+/* ------------------------------------------------ right-click: captions */
+/* A caption is a \caption in the figure's figure environment, or the line
+ * right after the figure when it is a small-text line ({\small ...}). */
+function captionOf(f) {
+  const doc = view.state.doc;
+  let envStart = null;
+  for (let l = f.line; l >= S.frame.start; l--) {
+    const t = doc.line(l).text;
+    if (/\\end\{figure\*?\}/.test(t) && l !== f.line) break;
+    if (/\\begin\{figure\*?\}/.test(t)) { envStart = l; break; }
+  }
+  if (envStart) {
+    for (let l = envStart; l <= S.frame.end && l <= doc.lines; l++) {
+      const t = doc.line(l).text;
+      if (/\\caption\b/.test(t)) return { line: l, inFigure: true };
+      if (/\\end\{figure\*?\}/.test(t)) break;
+    }
+    return { line: null, inFigure: true };
+  }
+  const next = f.line < doc.lines ? doc.line(f.line + 1).text.trim() : '';
+  if (/^\{\\(small|footnotesize|scriptsize|tiny)\b|^\\caption\b/.test(next)) return { line: f.line + 1, inFigure: false };
+  return { line: null, inFigure: false };
+}
+
+function addCaption(f) {
+  const doc = view.state.doc;
+  const c = captionOf(f);
+  const line = doc.line(f.line);
+  const indent = /^\s*/.exec(line.text)[0];
+  const changes = [];
+  let newText;
+  if (c.inFigure) newText = indent + '\\caption{Caption}';
+  else {
+    if (!/\\\\\s*(\[[^\]]*\])?\s*$/.test(line.text)) changes.push({ from: line.to, insert: '\\\\' });   // break after the figure
+    newText = indent + '{\\small Caption}';
+  }
+  changes.push({ from: line.to, insert: '\n' + newText });
+  view.dispatch({ changes });
+  const b = f.box;
+  openTextEdit(f.line + 1, { x: b.x, y: b.y + b.h + 2, w: Math.max(b.w, 160), h: 12, page: b.page }, 'Caption');
+}
+
+const menuEl = document.createElement('div'); menuEl.className = 'ctx-menu'; menuEl.hidden = true;
+document.body.appendChild(menuEl);
+function showMenu(x, y, items) {
+  menuEl.innerHTML = '';
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = it.label;
+    b.onclick = () => { menuEl.hidden = true; it.run(); };
+    menuEl.appendChild(b);
+  }
+  Object.assign(menuEl.style, { left: Math.min(x, innerWidth - 200) + 'px', top: Math.min(y, innerHeight - 40 * items.length) + 'px' });
+  menuEl.hidden = false;
+}
+addEventListener('mousedown', (e) => { if (!menuEl.hidden && !e.target.closest('.ctx-menu')) menuEl.hidden = true; }, true);
+addEventListener('keydown', (e) => { if (e.key === 'Escape' && !menuEl.hidden) menuEl.hidden = true; }, true);
+
+$('preview').addEventListener('contextmenu', (e) => {
+  if (!S.preview || S.stale) return;
+  const r = $('pagewrap').getBoundingClientRect();
+  const f = figAt((e.clientX - r.left) / pv.scale, (e.clientY - r.top) / pv.scale);
+  if (!f) return;
+  e.preventDefault();
+  if (f.kind !== 'figure') { showMenu(e.clientX, e.clientY, [{ label: 'Go to source', run: () => gotoLine(f.line) }]); return; }
+  const c = captionOf(f);
+  const items = [];
+  if (c.line) items.push({ label: 'Edit caption', run: () => openTextEdit(c.line) });
+  else items.push({ label: 'Add caption', run: () => addCaption(f) });
+  items.push({ label: 'Go to source', run: () => gotoLine(f.line) });
+  showMenu(e.clientX, e.clientY, items);
+});
+
+/* Click: show the source line in the code (focus stays here). Double-click
+ * on text: edit it in place. Figures win a click; inside boxes, text does. */
+async function previewHit(e) {
+  if (e.target.closest('.text-pop') || e.target.closest('.fig-handle') || !S.preview || S.stale) return null;
+  const r = $('pagewrap').getBoundingClientRect();
+  const x = (e.clientX - r.left) / pv.scale, y = (e.clientY - r.top) / pv.scale;
+  const fig = figAt(x, y);
+  if (fig && fig.kind === 'figure') return { fig };
+  const hit = await api.lineAt(S.preview.page, x, y);
+  if (hit) return { hit };
+  return fig ? { fig } : null;
+}
+$('preview').addEventListener('click', async (e) => {
+  if (e.detail > 1) return;                                     // part of a double-click
+  const h = await previewHit(e);
+  if (!h) return;
+  gotoLine(h.fig ? h.fig.line : h.hit.line, false);
+});
+$('preview').addEventListener('dblclick', async (e) => {
+  const h = await previewHit(e);
+  if (!h) return;
+  if (h.hit && h.hit.exact) openTextEdit(h.hit.line);
+  else gotoLine(h.fig ? h.fig.line : h.hit.line);
+});
+$('preview').addEventListener('mousemove', (e) => {
+  if (figDrag || !S.figs.length) return;
+  const r = $('pagewrap').getBoundingClientRect();
+  const f = figAt((e.clientX - r.left) / pv.scale, (e.clientY - r.top) / pv.scale);
+  if (f !== S.figHover) drawFigs(f);
+});
+$('preview').addEventListener('mouseleave', () => { if (!figDrag) drawFigs(null); });
 
 /* ------------------------------------------------------- deck follows */
 function followDeck(f) {
@@ -540,7 +1052,7 @@ window.editorCommand = (name) => {
   if (name === 'undo') CM.undo(view);
   else if (name === 'redo') CM.redo(view);
   else if (name === 'selectAll') view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
-  else if (name === 'find') CM.openSearchPanel(view);
+  else if (name === 'find') { CM.openSearchPanel(view); return; }   // the search field keeps the focus
   view.focus();
 };
 
@@ -554,6 +1066,7 @@ window.editorCommand = (name) => {
   S.pageFrames = init.pageFrames || [];
   $('deckname').textContent = init.texName;
   makeEditor(init.text);
+  refreshInfo();
   setDirty(false);
   applyFrames(init.frames);
   listenDeck();

@@ -41,7 +41,8 @@
 //       preferPath: RegExp, function(path) -> bool, or a string (exact path
 //       or path suffix). Default: anything not inside a TeX distribution
 //       (path without "/texmf"). Preferred records win over the rest.
-//   st.boxesForLine(path, line, page?, {tag, occurrence, lookahead}?)
+//   st.boxesForLine(path, line, page?, {tag, occurrence, lookahead, textOnly}?)
+//       textOnly: only tight text runs (no enclosing boxes), e.g. to measure a box's content
 //       Rectangles on the page(s) produced by that source line, merged per
 //       page where they touch on the same text line: [{page, x, y, w, h}],
 //       bp from the top-left. path is matched after remap, exactly, then by
@@ -543,6 +544,10 @@ class SyncTeX {
     for (const pg of [...byPage.keys()].sort((a, b) => a - b)) {
       const e = byPage.get(pg);
       let rects = e.leaves;
+      if (opts.textOnly) {                         // text runs only: no boxes that merely enclose text
+        for (const r of mergeRects(rects.filter((n) => n.kind === 'run'))) out.push({ page: pg, x: r.x, y: r.y, w: r.w, h: r.h });
+        continue;
+      }
       // fallback 1: innermost containers that close at this line
       if (!rects.length) rects = innermost(e.containers.filter((n) => n.maxLine <= n.line));
       // fallback 2: innermost boxes the line only touches (glue, empty boxes)

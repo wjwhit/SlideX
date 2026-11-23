@@ -39,7 +39,13 @@ lensEl.className = 'lens';
 lensEl.hidden = true;
 const lensCanvas = document.createElement('canvas');
 lensEl.appendChild(lensCanvas);
-document.body.append(laserEl, lensEl);
+/* The laser's tail: recent positions (page fractions, with times) drawn as a
+ * tapering, fading streak on a full-window canvas behind the dot. */
+const tailCanvas = document.createElement('canvas');
+tailCanvas.className = 'laser-tail';
+const TAIL_MS = 140;
+const tail = [];                                   // [{fx, fy, t}]
+document.body.append(tailCanvas, laserEl, lensEl);
 
 /* ----------------------------------------------------------- tool state */
 function setTool(t, broadcast = true) {
@@ -86,6 +92,7 @@ function drawPointer() {
   const map = viewMap(v);
   const p = tools.ptr;
   laserEl.hidden = !(tools.tool === 'laser' && p && map);
+  if (laserEl.hidden && tail.length) { tail.length = 0; tailCanvas.getContext('2d').clearRect(0, 0, tailCanvas.width, tailCanvas.height); }
   lensEl.hidden = !(tools.tool === 'lens' && p && map);
   if (!map || !p) return;
   const { x, y } = map.toScreen(p.fx, p.fy);
@@ -93,9 +100,54 @@ function drawPointer() {
     const d = Math.round(Math.max(10, 0.013 * map.g.vw));
     if (laserEl._d !== d) { laserEl.style.width = laserEl.style.height = d + 'px'; laserEl._d = d; }
     laserEl.style.transform = `translate3d(${x - d / 2}px, ${y - d / 2}px, 0)`;
+    const last = tail[tail.length - 1];
+    if (!last || last.fx !== p.fx || last.fy !== p.fy) tail.push({ fx: p.fx, fy: p.fy, t: performance.now() });
+    drawTail(map, d);
   } else if (tools.tool === 'lens') {
     drawLens(v, map, x, y);
   }
+}
+
+function drawTail(map, d) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.round(innerWidth * dpr), H = Math.round(innerHeight * dpr);
+  if (tailCanvas.width !== W || tailCanvas.height !== H) { tailCanvas.width = W; tailCanvas.height = H; }
+  const ctx = tailCanvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  const now = performance.now();
+  while (tail.length && now - tail[0].t > TAIL_MS) tail.shift();
+  if (tools.tool !== 'laser' || !map || tail.length < 2) { if (tail.length && tools.tool === 'laser') setTimeout(scheduleDraw, 16); return; }
+  // One tapered ribbon, filled once (separate strokes would overlap and show
+  // darker dots at their joints): narrow at the old end, as wide as half the
+  // dot at the head, fading in along its length.
+  const pts = tail.map((q) => map.toScreen(q.fx, q.fy));
+  const n = pts.length;
+  const half = (i) => (d * 0.28) * ((i + 1) / n) * (1 - (now - tail[i].t) / TAIL_MS * 0.5);
+  const left = [], right = [];
+  for (let i = 0; i < n; i++) {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+    let nx = -(b.y - a.y), ny = b.x - a.x;
+    const len = Math.hypot(nx, ny) || 1;
+    nx /= len; ny /= len;
+    const w = half(i);
+    left.push({ x: pts[i].x + nx * w, y: pts[i].y + ny * w });
+    right.push({ x: pts[i].x - nx * w, y: pts[i].y - ny * w });
+  }
+  const edge = left.concat(right.reverse());
+  ctx.beginPath();
+  ctx.moveTo(edge[0].x * dpr, edge[0].y * dpr);
+  for (let i = 1; i < edge.length; i++) {       // smooth through midpoints
+    const p0 = edge[i - 1], p1 = edge[i];
+    ctx.quadraticCurveTo(p0.x * dpr, p0.y * dpr, (p0.x + p1.x) / 2 * dpr, (p0.y + p1.y) / 2 * dpr);
+  }
+  ctx.closePath();
+  const head = pts[n - 1], end = pts[0];
+  const grad = ctx.createLinearGradient(end.x * dpr, end.y * dpr, head.x * dpr, head.y * dpr);
+  grad.addColorStop(0, 'rgba(255, 40, 40, 0)');
+  grad.addColorStop(1, 'rgba(255, 40, 40, 0.55)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+  setTimeout(scheduleDraw, 16);                     // keep fading after the pointer stops
 }
 
 function lensSize(map) { return Math.round(Math.min(Math.max(0.26 * map.g.vw, 140), 460)); }
@@ -209,6 +261,7 @@ document.addEventListener('keydown', (e) => {
       // in order: a page number being typed, the help, a tool, then full screen
       if (typeof typed !== 'undefined' && typed) used = false;     // viewer.js clears it
       else if (!$('help').hidden) $('help').hidden = true;
+      else if (!$('slides-panel').hidden) toggleSlides(false);
       else if (tools.tool) setTool(null);
       else leaveFullscreen();
       break;
@@ -229,10 +282,96 @@ document.addEventListener('click', (e) => {
   if (b.dataset.tool) setTool(a);
   else if (a === 'restart') moviesAction('restart');
   else if (a === 'presenter') openPresenter();
+  else if (a === 'slides') toggleSlides();
   else if (a === 'edit' && window.slidexApp && window.slidexApp.edit) window.slidexApp.edit();
   else if (a === 'help') $('help').hidden = !$('help').hidden;
   b.blur();
 });
+
+/* ------------------------------------------------------- slide panel */
+/* One thumbnail per frame, drawn as it scrolls into view. Frames come from the
+ * deck's source when the app can map pages to frames (SyncTeX); otherwise
+ * consecutive pages with the same beamer frame number form a frame (long runs,
+ * e.g. appendix pages all labelled 0, are shown page by page). */
+const slides = { groups: null, items: [], observer: null };
+
+async function frameGroups() {
+  let keys = null;
+  try { if (window.slidexApp && window.slidexApp.frameGroups) keys = await window.slidexApp.frameGroups(); } catch { /* not available */ }
+  if (!keys || keys.length !== nPages) {
+    keys = [];
+    let run = 0;
+    for (let i = 0; i < nPages; i++) {
+      const lab = pageLabels ? pageLabels[i] : String(i + 1);
+      run = i > 0 && keys[i - 1] && keys[i - 1].startsWith(lab + '|') ? run + 1 : 0;
+      keys.push(lab + '|' + (run >= 8 ? i : (i - run)));          // long runs: one per page
+    }
+  }
+  const groups = [];
+  keys.forEach((k, i) => {
+    const g = groups[groups.length - 1];
+    if (g && k != null && g.key === k) g.pages.push(i); else groups.push({ key: k == null ? '#p' + i : k, pages: [i] });
+  });
+  return groups;
+}
+
+async function toggleSlides(open) {
+  const panel = $('slides-panel');
+  open = open === undefined ? panel.hidden : open;
+  panel.hidden = !open;
+  document.body.classList.toggle('slides-open', open);
+  for (const b of document.querySelectorAll('[data-act="slides"]')) b.classList.toggle('active', open);
+  if (!open) return;
+  if (!slides.groups) await buildSlides();
+  markSlides(true);
+}
+
+async function buildSlides() {
+  const panel = $('slides-panel');
+  slides.groups = await frameGroups();
+  panel.innerHTML = '';
+  slides.items = slides.groups.map((g, n) => {
+    const item = document.createElement('div');
+    item.className = 'sp-item';
+    const c = document.createElement('canvas');
+    const cap = document.createElement('div');
+    cap.className = 'sp-cap';
+    const lab = pageLabels && pageLabels[g.pages[0]];
+    cap.textContent = `${n + 1}` + (g.pages.length > 1 ? `  ·  ${g.pages.length} steps` : '') + (lab && lab !== String(n + 1) ? `  ·  frame ${lab}` : '');
+    item.append(c, cap);
+    item.onclick = () => goto(g.pages[0]);
+    item.dataset.n = n;
+    panel.appendChild(item);
+    return { item, c, g, drawn: false };
+  });
+  slides.observer = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) drawSlide(slides.items[+e.target.dataset.n]);
+  }, { root: panel, rootMargin: '400px 0px' });
+  for (const it of slides.items) slides.observer.observe(it.item);
+}
+
+async function drawSlide(it) {
+  if (it.drawn) return;
+  it.drawn = true;
+  const page = it.g.pages[it.g.pages.length - 1];       // the frame's last step: everything shown
+  const inf = await info(page);
+  const half = slideHalf();
+  const w = $('slides-panel').clientWidth - 26;
+  const dpr = window.devicePixelRatio || 1;
+  const c = await renderPage(page, (half ? 2 : 1) * w);
+  const cw = half ? c.width / 2 : c.width;
+  it.c.width = Math.round(w * dpr); it.c.height = Math.round(w * dpr * inf.h / (inf.w * (half ? 0.5 : 1)));
+  it.c.getContext('2d').drawImage(c, half === 'right' ? c.width / 2 : 0, 0, cw, c.height, 0, 0, it.c.width, it.c.height);
+}
+
+function markSlides(scroll) {
+  if (!slides.items.length) return;
+  for (const it of slides.items) {
+    const on = it.g.pages.includes(cur);
+    it.item.classList.toggle('on', on);
+    if (on && scroll) it.item.scrollIntoView({ block: 'center' });
+  }
+}
 
 /* ------------------------------------------------------ speaker notes */
 const notes = { data: {}, url: PDF_URL + '.notes.json', key: null, timer: 0 };
@@ -304,6 +443,7 @@ window.smHooks = {
   pageChanging(i) {
     tools.hiRes = null;
     showNote(i);
+    setTimeout(() => markSlides(!$('slides-panel').hidden), 0);
   },
   viewShown(v) {
     if (v === primaryView()) {

@@ -7,6 +7,7 @@ export { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from
 export { searchKeymap, highlightSelectionMatches, search, openSearchPanel } from '@codemirror/search';
 export { StreamLanguage, syntaxHighlighting, defaultHighlightStyle, HighlightStyle, bracketMatching,
          indentOnInput, foldGutter, foldKeymap } from '@codemirror/language';
-export { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
+export { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap, startCompletion,
+         acceptCompletion } from '@codemirror/autocomplete';
 export { stex } from '@codemirror/legacy-modes/mode/stex';
 export { tags } from '@lezer/highlight';

@@ -196,11 +196,34 @@ function deckWindows(deck) {
   if (!deck || deck.isDestroyed()) return [];
   return [deck, ...[...(deckChildren.get(deck.id) || [])].filter((w) => !w.isDestroyed())];
 }
-function hideDeck(deck) { for (const w of deckWindows(deck)) w.hide(); }
+/* Hiding a full-screen window on macOS leaves its (black) full-screen Space
+ * behind. So leave full screen first, hide once the animation is over, and
+ * remember it: showing the window again puts it back in full screen. */
+function hideWindow(w) {
+  return new Promise((resolve) => {
+    if (!w || w.isDestroyed()) return resolve();
+    if (!w.isFullScreen()) { w.hide(); return resolve(); }
+    w.slidexWasFullScreen = true;
+    let done = false;
+    const finish = () => { if (done) return; done = true; setTimeout(() => { if (!w.isDestroyed()) w.hide(); resolve(); }, 80); };
+    w.once('leave-full-screen', finish);
+    setTimeout(finish, 1500);                      // in case the event never comes
+    w.setFullScreen(false);
+  });
+}
+function showWindow(w, { focus = true } = {}) {
+  if (!w || w.isDestroyed()) return;
+  if (focus) { w.show(); w.focus(); } else w.showInactive();
+  if (w.slidexWasFullScreen) {
+    w.slidexWasFullScreen = false;
+    setTimeout(() => { if (!w.isDestroyed()) w.setFullScreen(true); }, 120);
+  }
+}
+async function hideDeck(deck) { await Promise.all(deckWindows(deck).map(hideWindow)); }
 function showDeck(deck) {
   const ws = deckWindows(deck);
-  for (const w of ws.slice(1)) w.showInactive();   // presenter windows first, behind
-  if (ws[0]) { ws[0].show(); ws[0].focus(); }
+  for (const w of ws.slice(1)) showWindow(w, { focus: false });   // presenter windows first, behind
+  if (ws[0]) showWindow(ws[0]);
 }
 
 function setupWindow(win) {
@@ -308,9 +331,9 @@ async function openEditor(deckWin) {
   for (const [id, st] of editors) {
     if (st.texPath === texPath && !st.win.isDestroyed()) {   // back to edit mode
       st.deckWin = deckWin;
-      st.win.show(); st.win.focus();
+      await hideDeck(deckWin);                     // out of full screen first, then hidden
+      showWindow(st.win);
       st.win.webContents.send('slidex-ed:shown');
-      hideDeck(deckWin);
       return;
     }
   }
@@ -329,7 +352,7 @@ async function openEditor(deckWin) {
     editors.delete(st.id);
     if (st.deckWin && !st.deckWin.isDestroyed() && !st.deckWin.isVisible()) showDeck(st.deckWin);
   });
-  win.once('ready-to-show', () => hideDeck(deckWin));   // edit mode: only the editor
+  win.once('ready-to-show', () => { hideDeck(deckWin).then(() => { if (!win.isDestroyed() && win.isVisible()) win.focus(); }); });   // edit mode: only the editor
   win.loadURL(`http://127.0.0.1:${port}/viewer/editor.html`);
 }
 
@@ -417,8 +440,30 @@ ipcMain.handle('slidex-ed:present', async (e, key) => {
   if (!deck) { deck = openDeck(st.pdfPath); st.deckWin = deck; }
   const page = (st.pageFrames || []).indexOf(key);
   if (page >= 0) deck.webContents.executeJavaScript(`window.slidex && slidex.goto(${page})`).catch(() => {});
-  st.win.hide();
+  await hideWindow(st.win);
   showDeck(deck);
+});
+
+/* What completion needs: files near the deck, the URL they are served at
+ * (for thumbnails), and the commands and environments the deck defines. */
+/* A file or folder dropped on the editor: into figures/, converted if needed. */
+ipcMain.handle('slidex-ed:importMedia', async (e, src) => {
+  const st = edState(e);
+  try {
+    const r = await editor.importMedia(st.texPath, src);
+    if (r.kind === 'movie') {
+      const bundled = [path.join(__dirname, 'latex', 'slidemovie.sty'), path.join(__dirname, '..', 'latex', 'slidemovie.sty')].find((f) => fs.existsSync(f));
+      if (await editor.ensureSlidemovieSty(st.texPath, bundled)) r.notes.push('copied slidemovie.sty next to the deck');
+    }
+    return r;
+  } catch (err) { return { error: err.message }; }
+});
+
+ipcMain.handle('slidex-ed:projectInfo', (e, text) => {
+  const st = edState(e);
+  const dir = path.dirname(st.texPath);
+  const base = urlFor(st.root, path.join(dir, 'x')).replace(/x$/, '');
+  return { files: editor.listFiles(st.texPath), baseUrl: base, ...editor.scanMacros(st.texPath, text) };
 });
 
 ipcMain.handle('slidex-ed:lineAt', (e, page, x, y) => {
@@ -426,12 +471,25 @@ ipcMain.handle('slidex-ed:lineAt', (e, page, x, y) => {
   return st.sync ? st.sync.lineAt(page, x, y) : null;
 });
 
-ipcMain.handle('slidex-ed:boxesForLine', (e, line) => {
+ipcMain.handle('slidex-ed:boxesForLine', (e, line, opts) => {
   const st = edState(e);
-  return st.sync ? st.sync.boxesForLine(line) : [];
+  return st.sync ? st.sync.boxesForLine(line, opts || {}) : [];
 });
 
 ipcMain.handle('slidex:edit', (e) => openEditor(BrowserWindow.fromWebContents(e.sender)));
+
+/* Page -> frame key for a deck window's slide panel, from the deck's source
+ * and SyncTeX (null when there is no source or no build to map from). */
+ipcMain.handle('slidex:frameGroups', async (e) => {
+  const pdfPath = deckOf.get(e.sender.id);
+  const tex = pdfPath && editor.findSource(pdfPath);
+  if (!tex) return null;
+  try {
+    const frames = editor.parseFrames(fs.readFileSync(tex, 'utf8'));
+    const keys = await editor.pageFrames(tex, frames);
+    return keys.length ? keys : null;
+  } catch { return null; }
+});
 
 ipcMain.handle('slidex:open', (e, p) => {
   const win = BrowserWindow.fromWebContents(e.sender);
@@ -547,6 +605,9 @@ async function runSelftest(pdf) {
       fs.writeFileSync(out, img.toPNG());
       console.log('SELFTEST screenshot', out);
     }
+    if (process.env.SLIDEX_SELFTEST_EVAL) {          // any check in the deck window
+      console.log('SELFTEST eval', JSON.stringify(await js(process.env.SLIDEX_SELFTEST_EVAL)));
+    }
     if (process.env.SLIDEX_SELFTEST_EDITOR) {        // editor: compile a frame, cursor and hover lookups
       const before = new Set(BrowserWindow.getAllWindows().map((w) => w.id));
       await openEditor(win);
@@ -626,6 +687,141 @@ async function runSelftest(pdf) {
         return { before, after: out.offsetHeight, saved: localStorage.getItem('slidex.outputHeight') };
       })()`);
       console.log('SELFTEST output resize', JSON.stringify(rs));
+      if (process.env.SLIDEX_SELFTEST_BOXES) {           // box resizing, double-click editing, find
+        const res = await ejs(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const settle = async () => { await sleep(700); for (let i = 0; i < 80 && (S.compiling || S.stale); i++) await sleep(100); await sleep(400); };
+          const out = {};
+          const goFrame = async (label, page) => {
+            const f = S.frames.find((x) => x.label === label); gotoLine(f.bodyStart, false); await sleep(400); await settle();
+            if (page && S.preview.page !== page) { S.preview.page = page; await showPreview(S.preview); }
+            await findFigures();
+          };
+          const kinds = () => S.figs.map((f) => f.kind + '@' + f.line + ':' + Math.round(f.box.w) + 'x' + Math.round(f.box.h));
+          // tcolorbox on setup
+          await goFrame('setup');
+          out.setupItems = kinds();
+          const tb = S.figs.find((f) => f.kind === 'tcolorbox');
+          if (tb) {
+            const w0 = tb.box.w;
+            resizeTcolorbox(tb, 0.8);
+            out.tcolorboxLine = view.state.doc.line(tb.line).text.trim().match(/width=[^,\\]]*/)[0];
+            await settle(); await findFigures();
+            const tb2 = S.figs.find((f) => f.kind === 'tcolorbox' && f.line === tb.line);
+            out.tcolorboxRatio = tb2 ? +(tb2.box.w / w0).toFixed(3) : null;
+            CM.undo(view); await settle();
+          }
+          // \\keybox on planar, overlay step 2
+          await goFrame('planar', 2);
+          out.planarItems = kinds();
+          let kb = S.figs.find((f) => f.kind === 'macrobox');
+          if (kb) {
+            const w0 = kb.box.w;
+            resizeMacroBox(kb, 0.8);
+            out.keyboxAfter1 = view.state.doc.toString().slice(kb.at - 4, kb.at + 70).replace(/\\s+/g, ' ');
+            await settle(); S.preview.page = 2; await showPreview(S.preview); await findFigures();
+            kb = S.figs.find((f) => f.kind === 'macrobox');
+            out.keyboxRatio = kb ? +(kb.box.w / w0).toFixed(3) : null;
+            if (kb) {
+              resizeMacroBox(kb, 0.9);
+              const t = view.state.doc.toString();
+              out.keyboxAfter2 = (t.match(/\\\\makebox\\[\\\\linewidth\\]\\{\\\\begin\\{minipage\\}\\{[^}]*\\}/g) || []).join(' | ');
+              CM.undo(view);
+            }
+            CM.undo(view); await settle();
+          }
+          // single click vs double-click on text
+          await goFrame('setup');
+          let item = null;
+          for (let l = S.frame.start; l <= S.frame.end; l++) if (/^\\s*\\\\item\\b/.test(view.state.doc.line(l).text)) { item = l; break; }
+          const b = (await api.boxesForLine(item)).find((x) => x.page === S.preview.page);
+          const r = document.getElementById('pagewrap').getBoundingClientRect();
+          const cx = r.left + (b.x + 8) * pv.scale, cy = r.top + (b.y + b.h / 2) * pv.scale;
+          gotoLine(S.frame.start, false);
+          document.getElementById('preview').dispatchEvent(new MouseEvent('click', { clientX: cx, clientY: cy, bubbles: true, detail: 1 }));
+          await sleep(400);
+          out.singleClick = { cursorLine: cursorLine(), item, popup: !popEl.hidden };
+          document.getElementById('preview').dispatchEvent(new MouseEvent('dblclick', { clientX: cx, clientY: cy, bubbles: true, detail: 2 }));
+          await sleep(500);
+          out.doubleClick = { popup: !popEl.hidden, popupLine: popLine && popLine.line };
+          if (!popEl.hidden) popTa.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+          // find
+          editorCommand('find'); await sleep(300);
+          const inp = document.querySelector('.cm-search input[name=search]');
+          out.find = { panel: !!document.querySelector('.cm-search'), focused: document.activeElement === inp, top: !!document.querySelector('.cm-panels-top .cm-search') };
+          return out;
+        })()`);
+        console.log('SELFTEST boxes', JSON.stringify(res, null, 1));
+      }
+      if (process.env.SLIDEX_SELFTEST_FEATURES) {
+        const media = process.env.SLIDEX_SELFTEST_FEATURES;      // a GIF to drop in
+        const feat = await ejs(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const out = {};
+          const settle = async () => { await sleep(700); for (let i = 0; i < 60 && (S.compiling || S.stale); i++) await sleep(100); await sleep(400); };
+          // completion
+          const L = view.state.doc.line(cursorLine());
+          view.dispatch({ changes: { from: L.to, insert: ' \\\\keyb' }, selection: { anchor: L.to + 6 }, userEvent: 'input.type' });
+          await sleep(500);
+          out.completeCmd = [...document.querySelectorAll('.cm-tooltip-autocomplete li')].map((li) => li.textContent).slice(0, 3);
+          CM.undo(view); await sleep(150);
+          const L2 = view.state.doc.line(cursorLine());
+          view.dispatch({ changes: { from: L2.to, insert: ' \\\\includegraphics{figures/cyl' }, selection: { anchor: L2.to + 29 }, userEvent: 'input.type' });
+          await sleep(600);
+          out.completeFiles = document.querySelectorAll('.cm-tooltip-autocomplete li').length;
+          CM.undo(view); await settle();
+          // resize: the frame's first figure, x0.8
+          await findFigures();
+          const f = S.figs[0];
+          out.figure = f ? { line: f.line, w: Math.round(f.box.w) } : null;
+          if (f) {
+            const before = view.state.doc.line(f.line).text.trim();
+            resizeFigure(f, 0.8);
+            out.resizedLine = before + '  ->  ' + view.state.doc.line(f.line).text.trim();
+            await settle(); await findFigures();
+            const g = S.figs.find((x) => x.line === f.line);
+            out.newWidthRatio = g ? +(g.box.w / f.box.w).toFixed(3) : null;
+            CM.undo(view); await settle(); await findFigures();
+          }
+          // click-to-edit an \\item, then Enter at its end makes a new item
+          let itemLine = null;
+          for (let l = S.frame.start; l <= S.frame.end; l++) if (/^\\s*\\\\item\\b/.test(view.state.doc.line(l).text)) { itemLine = l; break; }
+          if (itemLine) {
+            await openTextEdit(itemLine);
+            popTa.value = popTa.value + ' EDITED';
+            popTa.setSelectionRange(popTa.value.length, popTa.value.length);
+            popTa.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            await sleep(200);
+            out.editedLine = view.state.doc.line(itemLine).text.trim().slice(-20);
+            out.newItemLine = view.state.doc.line(itemLine + 1).text;
+            out.popupOnNewItem = !popEl.hidden && popLine && popLine.line === itemLine + 1;
+            popTa.value = '\\\\item Second point'; popTa.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            await sleep(100);
+            CM.undo(view); CM.undo(view); await settle();
+          }
+          // captions
+          await findFigures();
+          out.captions = S.figs.map((x) => ({ line: x.line, caption: captionOf(x).line }));
+          const nocap = S.figs.find((x) => !captionOf(x).line);
+          if (nocap) {
+            addCaption(nocap); await sleep(300);
+            out.addedCaption = view.state.doc.line(nocap.line + 1).text.trim();
+            out.captionPopup = !popEl.hidden;
+            popTa.value = '{\\\\small A new caption}'; popTa.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+            await sleep(200);
+            out.captionAfter = view.state.doc.line(nocap.line + 1).text.trim();
+            CM.undo(view); CM.undo(view); await settle();
+          }
+          // drop-in media
+          const before = view.state.doc.lines;
+          await dropFiles([{ name: 'test.gif', path: ${JSON.stringify(media)} }], cursorLine());
+          out.dropStatus = document.getElementById('status').textContent;
+          out.dropLine = view.state.doc.line(cursorLine()).text.trim();
+          out.linesAdded = view.state.doc.lines - before;
+          return out;
+        })()`);
+        console.log('SELFTEST features', JSON.stringify(feat, null, 1));
+      }
       const img = await ew.webContents.capturePage();
       const out = (process.env.SLIDEX_SELFTEST_PNG || path.join(os.tmpdir(), 'slidex-selftest.png')).replace(/\.png$/, '-editor.png');
       fs.writeFileSync(out, img.toPNG());
@@ -637,6 +833,22 @@ async function runSelftest(pdf) {
         console.log('SELFTEST present', JSON.stringify({ ...vis(), deckPage: await js('slidex.page') }));
         await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))`); await wait(1500);
         console.log('SELFTEST presenter opened', JSON.stringify(vis()));
+        if (process.env.SLIDEX_SELFTEST_FULLSCREEN) {   // full screen: no black Space left behind
+          win.setFullScreen(true); await wait(2000);
+          const full0 = win.isFullScreen();
+          await openEditor(win); await wait(1500);
+          console.log('SELFTEST edit from full screen', JSON.stringify({ deckWasFull: full0, deckFull: win.isFullScreen(), ...vis() }));
+          await ejs(`api.present(frameKeyOf(S.frame))`); await wait(2500);
+          console.log('SELFTEST present back to full screen', JSON.stringify({ deckFull: win.isFullScreen(), ...vis() }));
+          win.setFullScreen(false); await wait(2000);
+          await openEditor(win); await wait(1000);
+          ew.setFullScreen(true); await wait(2000);
+          await ejs(`api.present(frameKeyOf(S.frame))`); await wait(2000);
+          console.log('SELFTEST present from full-screen editor', JSON.stringify({ editorFull: ew.isFullScreen(), ...vis() }));
+          await openEditor(win); await wait(2500);
+          console.log('SELFTEST edit back to full-screen editor', JSON.stringify({ editorFull: ew.isFullScreen(), ...vis() }));
+          ew.setFullScreen(false); await wait(2000);
+        }
         await openEditor(win); await wait(800);
         console.log('SELFTEST edit', JSON.stringify(vis()));
         const t0 = Date.now();

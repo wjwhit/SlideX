@@ -77,6 +77,7 @@ body.hide-cursor, body.hide-cursor * { cursor: none !important; }
   background: radial-gradient(circle, #fff 0 12%, #ff2a2a 30%, rgba(255, 30, 30, .55) 55%, rgba(255, 0, 0, 0) 72%);
   box-shadow: 0 0 10px 3px rgba(255, 40, 40, .55);
 }
+.laser-tail { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; z-index: 19; pointer-events: none; }
 .lens {
   position: fixed; left: 0; top: 0; z-index: 20; pointer-events: none; border-radius: 50%; overflow: hidden; will-change: transform;
   border: 3px solid rgba(20, 20, 20, .85); box-shadow: 0 6px 24px rgba(0, 0, 0, .45); background: #fff;
@@ -111,3 +112,14 @@ body.bar-on #a-toolbar { opacity: 1; pointer-events: auto; }
   font: 16px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
 }
 #memo:focus { outline: none; border-color: #2f7fd1; }
+
+/* Slide panel (Slides button): one thumbnail per frame */
+#slides-panel { position: fixed; left: 0; top: 0; bottom: 0; width: 230px; z-index: 16; overflow-y: auto;
+  background: rgba(20, 21, 24, .96); box-shadow: 2px 0 18px rgba(0, 0, 0, .5); padding: 10px 10px 60px; box-sizing: border-box; }
+#slides-panel .sp-item { margin-bottom: 12px; cursor: pointer; border: 2px solid transparent; border-radius: 5px; padding: 3px; }
+#slides-panel .sp-item:hover { border-color: #4a5058; }
+#slides-panel .sp-item.on { border-color: #3d8bfd; }
+#slides-panel canvas { display: block; width: 100%; background: #fff; }
+#slides-panel .sp-cap { color: #9aa1aa; font: 12px/1.3 -apple-system, BlinkMacSystemFont, sans-serif; margin-top: 3px; }
+#slides-panel .sp-item.on .sp-cap { color: #fff; }
+body.slides-open #a-toolbar { opacity: 1; pointer-events: auto; }
