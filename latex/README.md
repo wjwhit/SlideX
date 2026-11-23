@@ -71,6 +71,35 @@ python3 slidemovie.py present talk.pdf                          # present in a b
 `present` serves the deck on 127.0.0.1 only. If movies live outside the PDF's
 folder (`../figures/...`), pass `--root` with a folder that holds both.
 
+## Frames for SlideX's editor mode
+
+The editor highlights source lines on the slide through SyncTeX, which only
+works line by line inside **fragile** frames: beamer collects a normal frame's
+body (or a macro argument like `\myframe{label}{title}{body}`) before typesetting
+it, so everything maps to the frame's last line. These environments keep the
+usual look and add what the editor needs; they were checked to give a
+pixel-identical deck:
+
+```latex
+\makeatletter
+% one .vrb file per frame, named after the \begin line (<job>-L<line>.vrb)
+\patchcmd{\beamer@doexternalframe}{\jobname\ifx\beamer@againname\@empty\else.\insertframenumber\fi.vrb}
+  {\jobname-L\the\inputlineno.vrb}{}{\PackageWarningNoLine{slidex}{Could not patch beamer's .vrb file name}}
+\newcommand{\slidexmark}{}        % keeps beamer copying the body verbatim from the \begin line
+\newcommand{\slidex@endbody}{\ifhmode\par\fi}
+\newenvironment{cframe}[2]{%      \begin{cframe}{label=name}{Title} ... \end{cframe}
+  \begin{frame}[environment=cframe,fragile,#1]{#2}\slidexmark
+}{\slidex@endbody\end{frame}}
+% single-slide compiles: SlideX writes \includeonlyframes{label} to <job>.slidexonly
+\AddToHook{begindocument/before}{\InputIfFileExists{\jobname.slidexonly}{}{}}
+\makeatother
+```
+
+Rules: `\end{cframe}` alone on its line; the title on the `\begin` line; give
+every frame a `label=` so it can be compiled on its own. Plain
+`\begin{frame}[fragile]` frames also compile and preview, with frame-level
+highlighting.
+
 ## Why not `animate`, `media9` or `multimedia`?
 
 | Approach | Where it plays |

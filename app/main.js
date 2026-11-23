@@ -6,6 +6,7 @@
 // or `SlideX.app/Contents/MacOS/SlideX deck.pdf`.
 'use strict';
 const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell } = require('electron');
+const editor = require('./editor');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -13,6 +14,15 @@ const zlib = require('zlib');
 const os = require('os');
 
 const VIEWER = path.join(__dirname, 'viewer');
+
+/* A development build ("SlideX Dev") or a run from source keeps its own
+ * profile, so it can run next to the installed SlideX instead of handing its
+ * windows over to it (Chromium allows one running app per profile). */
+{
+  const exe = path.basename(process.execPath);
+  const profile = exe === 'SlideX' ? null : exe === 'SlideX Dev' ? 'SlideX Dev' : 'SlideX (source)';
+  if (profile) { app.setName(profile); app.setPath('userData', path.join(app.getPath('appData'), profile)); }
+}
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript',
   '.css': 'text/css', '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
@@ -232,6 +242,173 @@ function showWelcome() {
   return win;
 }
 
+/* ------------------------------------------------------------- editor */
+const editors = new Map();   // editor webContents id -> state
+
+/* URL a file under a deck root is served at. */
+function urlFor(root, file) {
+  let idx = decks.indexOf(root);
+  if (idx < 0) { decks.push(root); idx = decks.length - 1; }
+  const rel = path.relative(root, file).split(path.sep).map(encodeURIComponent).join('/');
+  return `http://127.0.0.1:${port}/deck/${idx}/${rel}`;
+}
+
+/* File > Open LaTeX Source: build the deck if its PDF is missing or older
+ * than the source, open it, then open the editor beside it. */
+async function openSource(win) {
+  const r = await dialog.showOpenDialog(win || undefined, { title: 'Open a beamer source file',
+    properties: ['openFile'], filters: [{ name: 'LaTeX', extensions: ['tex'] }] });
+  if (r.canceled || !r.filePaths.length) return;
+  const tex = r.filePaths[0];
+  const pdf = tex.replace(/\.tex$/i, '.pdf');
+  const stale = !fs.existsSync(pdf) || fs.statSync(pdf).mtimeMs < fs.statSync(tex).mtimeMs;
+  if (stale) {
+    const busy = new BrowserWindow({ width: 420, height: 120, frame: false, resizable: false, backgroundColor: '#1b1d21' });
+    busy.loadURL('data:text/html,' + encodeURIComponent('<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:%231b1d21;color:%23ddd;font:14px -apple-system,sans-serif">Building ' + path.basename(tex) + '…</body>'));
+    const c = await editor.compileDeck(tex);
+    busy.destroy();
+    if (!fs.existsSync(pdf)) {
+      dialog.showErrorBox('SlideX', 'The deck did not build:\n' + (c.errors.slice(0, 5).map((e) => (e.line ? 'line ' + e.line + ': ' : '') + e.message).join('\n') || 'see the .log file'));
+      return;
+    }
+  }
+  const deckWin = openDeck(pdf);
+  if (deckWin) deckWin.webContents.once('did-finish-load', () => setTimeout(() => openEditor(deckWin), 800));
+}
+
+async function openEditor(deckWin) {
+  const pdfPath = deckWin && deckOf.get(deckWin.webContents.id);
+  if (!pdfPath) { dialog.showErrorBox('SlideX', 'Open a deck first, then choose Edit Source.'); return; }
+  let texPath = editor.findSource(pdfPath);
+  if (!texPath) {
+    const r = await dialog.showOpenDialog(deckWin, { title: 'Choose the LaTeX source of this deck',
+      defaultPath: path.dirname(pdfPath), properties: ['openFile'], filters: [{ name: 'LaTeX', extensions: ['tex'] }] });
+    if (r.canceled || !r.filePaths.length) return;
+    texPath = r.filePaths[0];
+  }
+  for (const [id, st] of editors) {
+    if (st.texPath === texPath && !st.win.isDestroyed()) {   // back to edit mode
+      st.deckWin = deckWin;
+      st.win.show(); st.win.focus();
+      st.win.webContents.send('slidex-ed:shown');
+      return;
+    }
+  }
+  const { root } = deckRoot(pdfPath);
+  const win = new BrowserWindow({
+    width: 1500, height: 920, backgroundColor: '#1b1d21', title: 'SlideX editor: ' + path.basename(texPath),
+    show: !process.argv.includes('--selftest'),
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), backgroundThrottling: false },
+  });
+  setupWindow(win);
+  const st = { win, texPath, pdfPath, root: path.dirname(texPath) === root || path.dirname(texPath).startsWith(root + path.sep) ? root : path.dirname(texPath),
+    deckUrl: urlFor(root, pdfPath), frames: [], sync: null, syncFrame: null, deckWin };
+  editors.set(win.webContents.id, st);
+  win.on('closed', () => editors.delete(st.id));
+  st.id = win.webContents.id;
+  win.loadURL(`http://127.0.0.1:${port}/viewer/editor.html`);
+}
+
+function edState(e) {
+  const st = editors.get(e.sender.id);
+  if (!st) throw new Error('not an editor window');
+  return st;
+}
+
+async function pageFrames(st) { st.pageFrames = await editor.pageFrames(st.texPath, st.frames); return st.pageFrames; }
+
+/* The end of a LaTeX log, where errors and the summary are. */
+function tailLog(log, n = 400) {
+  if (!log) return '';
+  const lines = log.split('\n');
+  return (lines.length > n ? '[… ' + (lines.length - n) + ' earlier lines]\n' : '') + lines.slice(-n).join('\n');
+}
+
+function reloadDeckWindows(pdfPath) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (deckOf.get(w.webContents.id) === pdfPath) w.webContents.reload();
+  }
+}
+
+/* Errors in the single-frame .vrb copy point at the frame body's lines. */
+function mapErrors(st, errors) {
+  const bdir = editor.buildDir(st.texPath);
+  return errors.map((e) => {
+    const m = e.file && /-L(\d+)\.vrb$/.exec(e.file);
+    if (m) return { ...e, line: editor.vrbToSource(+m[1], e.line), file: st.texPath };
+    // the one-slide copy in .slidex/ keeps the deck's line numbers
+    if (e.file && /\.tex$/.test(e.file) && path.resolve(path.dirname(st.texPath), e.file).startsWith(bdir + path.sep)) return { ...e, file: st.texPath };
+    if (e.file && path.resolve(path.dirname(st.texPath), e.file) !== st.texPath) return { ...e, line: null, message: `${path.basename(e.file)}:${e.line}: ${e.message}` };
+    return e;
+  });
+}
+
+ipcMain.handle('slidex-ed:init', async (e) => {
+  const st = edState(e);
+  const text = fs.readFileSync(st.texPath, 'utf8');
+  st.frames = editor.parseFrames(text);
+  const pf = await pageFrames(st).catch(() => []);
+  let deckPage = 0;
+  try { deckPage = await st.deckWin.webContents.executeJavaScript('window.slidex ? slidex.page : 0'); } catch { /* closed */ }
+  return { texName: path.basename(st.texPath), text, frames: st.frames, deckUrl: st.deckUrl, pageFrames: pf, deckPage };
+});
+
+ipcMain.handle('slidex-ed:compileFrame', async (e, text, line) => {
+  const st = edState(e);
+  st.frames = editor.parseFrames(text);                  // compiles the editor's text: no save needed
+  const frame = editor.frameAtLine(st.frames, line);
+  const key = frame ? editor.frameKey(frame) : null;
+  const first = (st.pageFrames || []).indexOf(key);
+  const r = await editor.compileFrame(st.texPath, frame, text, { frames: st.frames, firstPage: first >= 0 ? first : null });
+  st.sync = null;
+  if (r.ok) {
+    st.sync = await editor.loadSync(st.texPath, r, frame).catch(() => null);
+    st.syncFrame = frame;
+  }
+  return { ok: r.ok, url: r.pdf ? urlFor(st.root, r.pdf) : null, label: r.label, exact: !!(st.sync && st.sync.exact),
+    frames: st.frames, errors: mapErrors(st, r.errors || []), ms: r.ms, fmt: r.fmt, log: tailLog(r.log) };
+});
+
+ipcMain.handle('slidex-ed:compileDeck', async (e, text) => {
+  const st = edState(e);
+  editor.saveSource(st.texPath, text);
+  st.frames = editor.parseFrames(text);
+  const r = await editor.compileDeck(st.texPath);
+  if (r.ok) reloadDeckWindows(st.pdfPath);
+  const pf = await pageFrames(st).catch(() => []);
+  return { ok: r.ok, frames: st.frames, errors: mapErrors(st, r.errors || []), ms: r.ms, pageFrames: pf, log: tailLog(r.log) };
+});
+
+ipcMain.handle('slidex-ed:save', (e, text) => {
+  const st = edState(e);
+  editor.saveSource(st.texPath, text);
+  st.frames = editor.parseFrames(text);
+  return { frames: st.frames };
+});
+
+/* Present: hide the editor, bring the deck forward on the editor's frame. */
+ipcMain.handle('slidex-ed:present', async (e, key) => {
+  const st = edState(e);
+  let deck = st.deckWin && !st.deckWin.isDestroyed() ? st.deckWin : null;
+  if (!deck) { deck = openDeck(st.pdfPath); st.deckWin = deck; }
+  const page = (st.pageFrames || []).indexOf(key);
+  if (page >= 0) deck.webContents.executeJavaScript(`window.slidex && slidex.goto(${page})`).catch(() => {});
+  st.win.hide();
+  deck.show(); deck.focus();
+});
+
+ipcMain.handle('slidex-ed:lineAt', (e, page, x, y) => {
+  const st = edState(e);
+  return st.sync ? st.sync.lineAt(page, x, y) : null;
+});
+
+ipcMain.handle('slidex-ed:boxesForLine', (e, line) => {
+  const st = edState(e);
+  return st.sync ? st.sync.boxesForLine(line) : [];
+});
+
+ipcMain.handle('slidex:edit', (e) => openEditor(BrowserWindow.fromWebContents(e.sender)));
+
 ipcMain.handle('slidex:open', (e, p) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (p && /\.pdf$/i.test(p)) {
@@ -249,16 +426,39 @@ ipcMain.handle('slidex:fullscreen', (e) => {
 });
 
 /* ----------------------------------------------------------------- menu */
+function editCommand(w, name) {
+  if (!w) return;
+  const wc = w.webContents;
+  if (editors.has(wc.id)) { wc.executeJavaScript(`window.editorCommand && editorCommand(${JSON.stringify(name)})`).catch(() => {}); return; }
+  if (name === 'undo') wc.undo();
+  else if (name === 'redo') wc.redo();
+  else if (name === 'selectAll') wc.selectAll();
+}
+
 function buildMenu() {
   const template = [
     { role: 'appMenu' },
     { label: 'File', submenu: [
       { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: (_, w) => chooseDeck(w) },
+      { label: 'Open LaTeX Source…', accelerator: 'Shift+CmdOrCtrl+O', click: (_, w) => openSource(w) },
+      { label: 'Edit Source of This Deck', accelerator: 'CmdOrCtrl+E', click: (_, w) => openEditor(w) },
       { role: 'recentDocuments', submenu: [{ role: 'clearRecentDocuments' }] },
       { type: 'separator' },
       { label: 'Show in Finder', click: (_, w) => { const p = w && deckOf.get(w.webContents.id); if (p) shell.showItemInFolder(p); } },
       { type: 'separator' },
       { role: 'close' },
+    ] },
+    // Edit: on macOS, Cmd-Z/C/X/V/A reach the page (editor, notes box) only
+    // through this menu. Undo, Redo and Select All go to the code editor's own
+    // commands in editor windows (its document is not all in the page at once).
+    { label: 'Edit', submenu: [
+      { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: (_, w) => editCommand(w, 'undo') },
+      { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', click: (_, w) => editCommand(w, 'redo') },
+      { type: 'separator' },
+      { role: 'cut' }, { role: 'copy' }, { role: 'paste' },
+      { label: 'Select All', accelerator: 'CmdOrCtrl+A', click: (_, w) => editCommand(w, 'selectAll') },
+      { type: 'separator' },
+      { label: 'Find', accelerator: 'CmdOrCtrl+F', click: (_, w) => editCommand(w, 'find') },
     ] },
     { label: 'View', submenu: [
       { label: 'Presenter Window', accelerator: 'CmdOrCtrl+P',
@@ -322,6 +522,99 @@ async function runSelftest(pdf) {
       const out = base.replace(/\.png$/, `-p${pg}.png`);
       fs.writeFileSync(out, img.toPNG());
       console.log('SELFTEST screenshot', out);
+    }
+    if (process.env.SLIDEX_SELFTEST_EDITOR) {        // editor: compile a frame, cursor and hover lookups
+      const before = new Set(BrowserWindow.getAllWindows().map((w) => w.id));
+      await openEditor(win);
+      const ew = BrowserWindow.getAllWindows().find((w) => !before.has(w.id));
+      if (!ew) throw new Error('editor did not open');
+      const ejs = (code) => ew.webContents.executeJavaScript(code);
+      for (let i = 0; i < 60; i++) { await wait(500); if (await ejs('!!(window.S && S.preview && S.preview.page)')) break; }
+      const label = process.env.SLIDEX_SELFTEST_EDITOR;
+      const res = await ejs(`(async () => {
+        const f = S.frames.find((x) => x.label === ${JSON.stringify(label)});
+        gotoLine(f.bodyStart + 5, false);
+        await new Promise((r) => setTimeout(r, 2500));
+        const cur = S.frame && S.frame.label;
+        const line = cursorLine();
+        const boxes = await api.boxesForLine(line);
+        drawBoxes('cursor', boxes);
+        const b = boxes.find((x) => x.page === S.preview.page);
+        let hover = null;
+        if (b) {
+          const r = document.getElementById('pagewrap').getBoundingClientRect();
+          const ev = new MouseEvent('mousemove', { clientX: r.left + (b.x + b.w / 2) * pv.scale, clientY: r.top + (b.y + b.h / 2) * pv.scale, bubbles: true });
+          document.getElementById('preview').dispatchEvent(ev);
+          await new Promise((r2) => setTimeout(r2, 400));
+          hover = S.hoverLine;
+        }
+        return { frame: cur, cursorLine: line, boxes: boxes.length, hoverLine: hover, status: document.getElementById('status').textContent, frames: S.frames.length };
+      })()`);
+      console.log('SELFTEST editor', JSON.stringify(res));
+      const texBefore = fs.statSync(editors.get(ew.webContents.id).texPath).mtimeMs;
+      const res2 = await ejs(`(async () => {
+        const thumbs = document.querySelectorAll('#strip .thumb').length;
+        const on = document.querySelector('#strip .thumb.on');
+        const t0 = performance.now();
+        const line = view.state.doc.line(cursorLine());
+        view.dispatch({ changes: { from: line.to, insert: ' LIVEEDIT' } });
+        for (let i = 0; i < 40 && (S.stale || S.compiling); i++) await new Promise((r) => setTimeout(r, 100));
+        return { thumbs, onThumb: on && on.dataset.key, liveMs: Math.round(performance.now() - t0), stale: S.stale, status: document.getElementById('status').textContent, dirty: S.dirty };
+      })()`);
+      const texAfter = fs.statSync(editors.get(ew.webContents.id).texPath).mtimeMs;
+      {                                    // the Edit menu's actions on the code editor
+        const { clipboard } = require('electron');
+        const saved = await clipboard.readText();
+        const ed = (code) => ejs(code);
+        ew.show(); ew.focus(); await wait(400);        // copy/cut act on the focused text
+        await ed(`view.focus(); (() => { const l = view.state.doc.line(cursorLine()); view.dispatch({ selection: { anchor: l.from, head: l.to } }); })()`);
+        const selected = await ed('view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)');
+        ew.webContents.copy(); await wait(300);
+        const copied = await clipboard.readText();
+        await ed(`(() => { const l = view.state.doc.line(cursorLine()); view.dispatch({ selection: { anchor: l.to } }); })()`);
+        await clipboard.writeText(' PASTED-TEXT'); ew.webContents.paste(); await wait(300);
+        const afterPaste = await ed('view.state.doc.line(cursorLine()).text');
+        editCommand(ew, 'undo'); await wait(300);
+        const afterUndo = await ed('view.state.doc.line(cursorLine()).text');
+        await ed(`(() => { const l = view.state.doc.line(cursorLine()); view.dispatch({ selection: { anchor: l.from, head: l.from + 6 } }); })()`);
+        ew.webContents.cut(); await wait(300);
+        const cut = await clipboard.readText();
+        const afterCut = await ed('view.state.doc.line(cursorLine()).text');
+        editCommand(ew, 'undo'); await wait(300);
+        editCommand(ew, 'selectAll'); await wait(200);
+        const all = await ed('view.state.selection.main.to - view.state.selection.main.from === view.state.doc.length');
+        await ed(`gotoLine(S.frame.bodyStart + 5, false)`); await wait(2500);
+        ew.hide();
+        try { if (typeof saved === 'string' && saved) await clipboard.writeText(saved); } catch { /* clipboard held non-text */ }
+        console.log('SELFTEST clipboard', JSON.stringify({ copyOk: copied === selected && copied.length > 0,
+          pasteOk: afterPaste.endsWith(' PASTED-TEXT'), undoOk: !afterUndo.includes('PASTED-TEXT'),
+          cutOk: cut.length === 6 && !afterCut.startsWith(cut), selectAllOk: all }));
+        if (process.env.SLIDEX_SELFTEST_DEBUG) console.log('SELFTEST clipdebug', JSON.stringify({ selected: selected.slice(0, 40), copied: copied.slice(0, 40), cut, hasFocus: await ed('document.hasFocus()'), active: await ed('document.activeElement && document.activeElement.className') }));
+      }
+      console.log('SELFTEST editor live', JSON.stringify({ ...res2, texUntouched: texBefore === texAfter }));
+      const rs = await ejs(`(async () => {
+        const out = document.getElementById('output'), h = document.getElementById('out-resize').getBoundingClientRect();
+        const before = out.offsetHeight, y = h.top + 3;
+        document.getElementById('out-resize').dispatchEvent(new MouseEvent('mousedown', { clientY: y, bubbles: true }));
+        window.dispatchEvent(new MouseEvent('mousemove', { clientY: y - 200, bubbles: true }));
+        window.dispatchEvent(new MouseEvent('mouseup', { clientY: y - 200, bubbles: true }));
+        await new Promise((r) => setTimeout(r, 200));
+        return { before, after: out.offsetHeight, saved: localStorage.getItem('slidex.outputHeight') };
+      })()`);
+      console.log('SELFTEST output resize', JSON.stringify(rs));
+      await ejs(`S.dirty = false; api.present(frameKeyOf(S.frame))`);
+      await wait(800);
+      const deckPage = await js('slidex.page');
+      console.log('SELFTEST present', JSON.stringify({ editorVisible: ew.isVisible(), deckPage }));
+      await openEditor(win);
+      await wait(500);
+      console.log('SELFTEST back to edit', JSON.stringify({ editorVisible: ew.isVisible() || ew.webContents.isLoading() === false && editors.has(ew.webContents.id) }));
+      const img = await ew.webContents.capturePage();
+      const out = (process.env.SLIDEX_SELFTEST_PNG || path.join(os.tmpdir(), 'slidex-selftest.png')).replace(/\.png$/, '-editor.png');
+      fs.writeFileSync(out, img.toPNG());
+      ew.setSize(1100, 700); await wait(600);
+      fs.writeFileSync(out.replace(/\.png$/, '-narrow.png'), (await ew.webContents.capturePage()).toPNG());
+      console.log('SELFTEST editor screenshot', out);
     }
     if (process.env.SLIDEX_SELFTEST_NOTES) {     // notes round trip through the server
       const nf = path.resolve(pdf) + '.notes.json';

@@ -229,6 +229,7 @@ document.addEventListener('click', (e) => {
   if (b.dataset.tool) setTool(a);
   else if (a === 'restart') moviesAction('restart');
   else if (a === 'presenter') openPresenter();
+  else if (a === 'edit' && window.slidexApp && window.slidexApp.edit) window.slidexApp.edit();
   else if (a === 'help') $('help').hidden = !$('help').hidden;
   b.blur();
 });
@@ -312,3 +313,6 @@ window.smHooks = {
     if (MODE === 'presenter' && v === viewFor.current) showNote(v.index);
   },
 };
+
+/* The Edit button exists only in the desktop app. */
+if (!(window.slidexApp && window.slidexApp.edit)) for (const b of document.querySelectorAll('.app-only')) b.remove();

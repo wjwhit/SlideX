@@ -1,4 +1,6 @@
-// Build dist/SlideX.app (run via `npm run package`).
+// Build dist/SlideX.app (`npm run package`), or with SLIDEX_DEV=1 a separate
+// "SlideX Dev.app" with its own bundle ID (`npm run package:dev`), so a
+// development build can sit next to the installed SlideX without replacing it.
 //
 // Assembles the bundle from the Electron already in node_modules (no second
 // download): copy Electron.app, drop our code into Contents/Resources/app,
@@ -22,7 +24,9 @@ if (!fs.existsSync(src)) {
   process.exit(1);
 }
 const dist = path.join(here, 'dist');
-const appPath = path.join(dist, 'SlideX.app');
+const DEV = !!process.env.SLIDEX_DEV;
+const NAME = DEV ? 'SlideX Dev' : 'SlideX';
+const appPath = path.join(dist, `${NAME}.app`);
 fs.rmSync(appPath, { recursive: true, force: true });
 fs.mkdirSync(dist, { recursive: true });
 run('ditto', [src, appPath]);           // keeps symlinks and framework layout
@@ -31,7 +35,7 @@ run('ditto', [src, appPath]);           // keeps symlinks and framework layout
 const res = path.join(appPath, 'Contents', 'Resources');
 const appDir = path.join(res, 'app');
 fs.mkdirSync(appDir);
-for (const f of ['main.js', 'preload.js']) fs.copyFileSync(path.join(here, f), path.join(appDir, f));
+for (const f of ['main.js', 'preload.js', 'editor.js', 'synctex.js']) fs.copyFileSync(path.join(here, f), path.join(appDir, f));
 run('ditto', [path.join(here, 'viewer'), path.join(appDir, 'viewer')]);
 { // runtime package.json: no scripts or dev dependencies
   const pkg = require('./package.json');
@@ -44,17 +48,17 @@ fs.rmSync(path.join(res, 'default_app.asar'), { force: true });
 fs.copyFileSync(icon, path.join(res, 'SlideX.icns'));
 fs.rmSync(path.join(res, 'electron.icns'), { force: true });
 const macos = path.join(appPath, 'Contents', 'MacOS');
-fs.renameSync(path.join(macos, 'Electron'), path.join(macos, 'SlideX'));
+fs.renameSync(path.join(macos, 'Electron'), path.join(macos, NAME));
 
 const info = path.join(appPath, 'Contents', 'Info.plist');
 function setKey(key, type, value) {
   try { plist(info, `Delete :${key}`); } catch { /* not there */ }
   plist(info, `Add :${key} ${type} ${value}`);
 }
-setKey('CFBundleExecutable', 'string', 'SlideX');
-setKey('CFBundleName', 'string', 'SlideX');
-setKey('CFBundleDisplayName', 'string', 'SlideX');
-setKey('CFBundleIdentifier', 'string', 'org.slidex.app');
+setKey('CFBundleExecutable', 'string', NAME);
+setKey('CFBundleName', 'string', NAME);
+setKey('CFBundleDisplayName', 'string', NAME);
+setKey('CFBundleIdentifier', 'string', DEV ? 'org.slidex.app.dev' : 'org.slidex.app');
 setKey('CFBundleIconFile', 'string', 'SlideX.icns');
 setKey('CFBundleShortVersionString', 'string', require('./package.json').version);
 setKey('LSApplicationCategoryType', 'string', 'public.app-category.productivity');
