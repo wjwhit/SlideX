@@ -1,0 +1,19 @@
+{
+  "name": "slidex-codemirror-bundle",
+  "private": true,
+  "description": "Builds viewer/vendor/codemirror.js, the code editor used by SlideX's editor mode",
+  "scripts": {
+    "build": "esbuild entry.js --bundle --minify --format=iife --global-name=CM --outfile=../../viewer/vendor/codemirror.js --legal-comments=eof"
+  },
+  "devDependencies": {
+    "codemirror": "6.0.2",
+    "@codemirror/autocomplete": "6.20.4",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/legacy-modes": "6.5.5",
+    "@codemirror/search": "6.7.2",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
+    "esbuild": "0.28.2"
+  }
+}

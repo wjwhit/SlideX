@@ -1,0 +1,10 @@
+% The SlideX wordmark (option F): "Slide" to the power of an italic x,
+% in Computer Modern like \TeX. Build: pdflatex wordmark.tex, then
+% pdftocairo -svg / -png (see make_wordmark.sh).
+\documentclass[border=2pt]{standalone}
+\usepackage[T1]{fontenc}\usepackage{lmodern}\usepackage{xcolor}
+\definecolor{ink}{RGB}{28,52,86}
+\newcommand{\slidex}{Slide$^{\,\mathit{x}}$}
+\begin{document}
+\color{\inkcolor}\fontsize{40}{44}\selectfont\slidex
+\end{document}

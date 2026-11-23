@@ -1,7 +1,7 @@
 {
   "name": "slidex",
   "productName": "SlideX",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "PDF slide presenter for beamer decks: movies that play, presenter view, laser, magnifier, speaker notes",
   "main": "main.js",
   "private": true,
@@ -10,6 +10,7 @@
     "sync-viewer": "node -e \"const fs=require('fs'); fs.rmSync('viewer', {recursive: true, force: true}); fs.cpSync('../viewer', 'viewer', {recursive: true})\"",
     "start": "npm run sync-viewer && electron .",
     "package": "npm run sync-viewer && node build.js",
+    "package:dev": "npm run sync-viewer && SLIDEX_DEV=1 node build.js",
     "dmg": "npm run package && bash make_dmg.sh"
   },
   "devDependencies": {

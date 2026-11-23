@@ -1,0 +1,21 @@
+% SlideX wordmark options, in the spirit of \TeX and \LaTeX (Computer Modern).
+\documentclass{article}
+\usepackage[T1]{fontenc}\usepackage{lmodern}\usepackage{amssymb,amsmath}\usepackage{xcolor}\usepackage{graphicx}
+\usepackage[paperwidth=17cm,paperheight=27.5cm,margin=8mm]{geometry}
+\pagestyle{empty}\setlength{\parindent}{0pt}
+\definecolor{ink}{RGB}{28,52,86}\definecolor{acc}{RGB}{61,139,253}
+\newcommand{\opt}[3]{\par\noindent\makebox[1.1cm][l]{\Large\sffamily\bfseries #1}%
+  \parbox[c][2.05cm][c]{8.8cm}{\color{ink}\fontsize{50}{56}\selectfont #2}%
+  \parbox[c]{5.4cm}{\small\sffamily\color{black!65} #3}\par\vspace{1mm}{\color{black!12}\rule{\linewidth}{.4pt}}\par}
+\begin{document}
+\opt{A}{Slide\kern-.125em\lower.5ex\hbox{X}}{The \TeX{} move: X dropped below the baseline, like the E in \TeX.}
+\opt{B}{S\textsc{lide}\kern-.125em\lower.5ex\hbox{X}}{Small capitals with the dropped X: the closest cousin of \TeX.}
+\opt{C}{Slide$\mathcal{X}$}{Calligraphic math X: reads as a variable.}
+\opt{D}{S$\ell$ide\kern-.1em$\chi$}{Script $\ell$ for the l and a Greek chi for the X.}
+\opt{E}{\raisebox{-.2em}{\resizebox{!}{1.02em}{$\int$}}\kern-.04em lide\kern-.06em\textit{X}}{Integral sign as the S, italic X.}
+\opt{F}{Slide$^{\,\mathit{x}}$}{Slide to a power: italic x as an exponent.}
+\opt{G}{\textsc{Slide}\kern-.02em\lower.3ex\hbox{\color{acc}$\times$}}{Small caps with a lowered, coloured times sign.}
+\opt{H}{\textit{Slide}\kern-.05em\raise.55ex\hbox{\fontsize{30}{30}\selectfont X}}{Italic word, raised small X: like a superscript mark.}
+\opt{I}{S\kern-.07em$\ell$\kern-.04em\textit{i}de\kern-.1em\lower.5ex\hbox{$\mathbb{X}$}}{Mixed: script $\ell$, italic i, blackboard X dropped like \TeX.}
+\opt{J}{Slide\kern-.08em\raise.5ex\hbox{\color{acc}$\mathcal{X}$}}{Calligraphic X raised, in the accent blue.}
+\end{document}

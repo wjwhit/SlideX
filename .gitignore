@@ -21,3 +21,4 @@ app/viewer/
 
 __pycache__/
 .DS_Store
+tools/codemirror/node_modules/

@@ -1,4 +1,9 @@
-# SlideX
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="tools/logo/wordmark-light.svg">
+    <img src="tools/logo/wordmark-dark.svg" alt="SlideX" height="72">
+  </picture>
+</h1>
 
 A presenter for PDF slides, made for beamer decks. Open the PDF and present: the
 slides are drawn sharply at any screen size, movies play in place, and a
@@ -35,6 +40,7 @@ icon, or with Finder's "Open With > SlideX". Press `?` for all keys.
 | Home / End, *number* Enter | jump |
 | f | full screen |
 | s | presenter window |
+| Slides (toolbar) | panel of slide thumbnails: click one to go there; Esc closes it |
 | l | laser pointer |
 | m | magnifier; scroll to change its power |
 | e | type speaker notes (presenter window); Esc leaves the box |
@@ -51,6 +57,66 @@ presenter window, and appears at the bottom of the projector while the mouse mov
 
 Speaker notes are saved as `<deck>.pdf.notes.json` next to the PDF, keyed by
 beamer's frame number, so every overlay step of a slide shows the same note.
+
+## Editor mode
+
+Open a deck, then File > Edit Source of This Deck (Cmd-E) or the deck
+toolbar's **Edit** button: the editor opens the `.tex` with the same name as
+the PDF. File > Open LaTeX Source (Shift-Cmd-O) starts from a `.tex` instead,
+building it first if its PDF is missing or older.
+
+- **Slide strip** on the left: one thumbnail per frame, drawn from the full
+  deck and redrawn after Compile deck. Click one to go to that frame.
+- **One slide at a time.** Cmd-Enter compiles only the frame under the cursor,
+  from the text in the editor (your file is not saved): about 0.4 to 0.6 s per
+  slide. With **Live** on, the slide recompiles half a second after you stop
+  typing. Cmd-S saves.
+- **Compile deck** (Shift-Cmd-Enter) saves, builds the whole deck, reloads the
+  presenter and the strip.
+- **Two-way highlighting.** Hover over the preview to highlight the source line
+  that made it; put the cursor on a line to outline what it made. Click the
+  preview to jump to the line.
+- **Present ▶** hides the editor and brings the deck forward on the same slide;
+  **Edit** (or Cmd-E) in the deck switches back to the slide you are on. Deck
+  and editor follow each other frame by frame.
+- **Compile & Present** saves, builds the deck and switches to presenting;
+  **Present** switches straight away with the deck as last built.
+- **Completion** as you type: LaTeX and beamer commands plus the deck's own
+  (`\newcommand`s in the preamble and `\input` files), environments
+  (`\begin` writes the `\end`), labels for `\ref`/`\hyperlink`, figure and movie
+  paths with thumbnails, and `\includegraphics`/`\slidemovie` options.
+- **Resize figures and movies on the preview:** hover one, drag its corner
+  handle; `width=`/`height=`/`scale=` are scaled in your own units.
+- **Resize boxes:** `tcolorbox` environments and the deck's own box macros
+  (any `\newcommand` that draws a `tcolorbox`, e.g. a `\keybox`) get a handle
+  on their right edge. A `tcolorbox` gets its `width=` scaled; a macro use is
+  wrapped in `\makebox[\linewidth]{\begin{minipage}{0.8\linewidth}...}`, centred,
+  and resizing again rescales that width.
+- **Click** the preview to show that line in the code; **double-click text** to
+  edit its source line in place (Enter applies, Esc cancels). Enter at the end of an `\item`, here or in the code, starts the
+  next item; Enter on an empty item ends the list.
+- **Right-click a figure or movie** to add or edit its caption.
+- **Drop images, movies, GIFs or folders of frames** on the editor: they are
+  copied into `./figures/` (GIFs and frames become mp4 with a poster, needs
+  ffmpeg) and the `\includegraphics`/`\slidemovie` line is inserted.
+- **Find** (Cmd-F): a search bar over the code, with replace.
+- Edit menu: undo, redo, cut, copy, paste, select all, find.
+- LaTeX errors are listed under the preview and marked in the code.
+- Before the first save in a session, the original source is copied to
+  `.slidex/backups/`. Builds go to `.slidex/` next to the deck.
+
+How single slides are fast: SlideX writes a one-slide copy of the document to
+`.slidex/` (preamble and everything between frames kept, other frames blanked
+so line numbers match, frame and page counters set as in the deck), with the
+preamble precompiled. On the test deck the result is pixel-identical to the
+full build's pages.
+
+Frames need a `label=` to compile on their own. For line-by-line highlighting,
+frames must be **fragile** environments set up as in
+[latex/README.md](latex/README.md#frames-for-slidexs-editor-mode): beamer
+collects a normal frame's body before typesetting it, so SyncTeX can only
+point at the end of the frame. Other frames still compile and preview, with
+frame-level highlighting.
 
 ## Building
 
