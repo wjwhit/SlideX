@@ -189,6 +189,20 @@ function openDeck(pdfPath, opts = {}) {
   return win;
 }
 
+const deckChildren = new Map();   // deck window id -> its presenter windows
+
+/* A deck window and its presenter windows: hidden together while editing. */
+function deckWindows(deck) {
+  if (!deck || deck.isDestroyed()) return [];
+  return [deck, ...[...(deckChildren.get(deck.id) || [])].filter((w) => !w.isDestroyed())];
+}
+function hideDeck(deck) { for (const w of deckWindows(deck)) w.hide(); }
+function showDeck(deck) {
+  const ws = deckWindows(deck);
+  for (const w of ws.slice(1)) w.showInactive();   // presenter windows first, behind
+  if (ws[0]) { ws[0].show(); ws[0].focus(); }
+}
+
 function setupWindow(win) {
   const wc = win.webContents;
   wc.setWindowOpenHandler(({ url }) => {
@@ -203,6 +217,11 @@ function setupWindow(win) {
   wc.on('did-create-window', (child) => {
     setupWindow(child);
     placePresenter(win, child);
+    if (deckOf.has(wc.id)) {                     // a deck's presenter window
+      if (!deckChildren.has(win.id)) deckChildren.set(win.id, new Set());
+      deckChildren.get(win.id).add(child);
+      child.on('closed', () => { const set = deckChildren.get(win.id); if (set) set.delete(child); });
+    }
   });
   wc.on('will-navigate', (e, url) => {
     if (!url.startsWith(`http://127.0.0.1:${port}/`)) { e.preventDefault(); if (/^https?:/i.test(url)) shell.openExternal(url); }
@@ -291,6 +310,7 @@ async function openEditor(deckWin) {
       st.deckWin = deckWin;
       st.win.show(); st.win.focus();
       st.win.webContents.send('slidex-ed:shown');
+      hideDeck(deckWin);
       return;
     }
   }
@@ -304,8 +324,12 @@ async function openEditor(deckWin) {
   const st = { win, texPath, pdfPath, root: path.dirname(texPath) === root || path.dirname(texPath).startsWith(root + path.sep) ? root : path.dirname(texPath),
     deckUrl: urlFor(root, pdfPath), frames: [], sync: null, syncFrame: null, deckWin };
   editors.set(win.webContents.id, st);
-  win.on('closed', () => editors.delete(st.id));
   st.id = win.webContents.id;
+  win.on('closed', () => {                       // editing over: bring the deck back
+    editors.delete(st.id);
+    if (st.deckWin && !st.deckWin.isDestroyed() && !st.deckWin.isVisible()) showDeck(st.deckWin);
+  });
+  win.once('ready-to-show', () => hideDeck(deckWin));   // edit mode: only the editor
   win.loadURL(`http://127.0.0.1:${port}/viewer/editor.html`);
 }
 
@@ -326,7 +350,7 @@ function tailLog(log, n = 400) {
 
 function reloadDeckWindows(pdfPath) {
   for (const w of BrowserWindow.getAllWindows()) {
-    if (deckOf.get(w.webContents.id) === pdfPath) w.webContents.reload();
+    if (deckOf.get(w.webContents.id) === pdfPath) for (const d of deckWindows(w)) d.webContents.reload();
   }
 }
 
@@ -374,9 +398,9 @@ ipcMain.handle('slidex-ed:compileDeck', async (e, text) => {
   editor.saveSource(st.texPath, text);
   st.frames = editor.parseFrames(text);
   const r = await editor.compileDeck(st.texPath);
-  if (r.ok) reloadDeckWindows(st.pdfPath);
+  if (r.built) reloadDeckWindows(st.pdfPath);
   const pf = await pageFrames(st).catch(() => []);
-  return { ok: r.ok, frames: st.frames, errors: mapErrors(st, r.errors || []), ms: r.ms, pageFrames: pf, log: tailLog(r.log) };
+  return { ok: r.ok, built: r.built, frames: st.frames, errors: mapErrors(st, r.errors || []), ms: r.ms, pageFrames: pf, log: tailLog(r.log) };
 });
 
 ipcMain.handle('slidex-ed:save', (e, text) => {
@@ -394,7 +418,7 @@ ipcMain.handle('slidex-ed:present', async (e, key) => {
   const page = (st.pageFrames || []).indexOf(key);
   if (page >= 0) deck.webContents.executeJavaScript(`window.slidex && slidex.goto(${page})`).catch(() => {});
   st.win.hide();
-  deck.show(); deck.focus();
+  showDeck(deck);
 });
 
 ipcMain.handle('slidex-ed:lineAt', (e, page, x, y) => {
@@ -602,19 +626,32 @@ async function runSelftest(pdf) {
         return { before, after: out.offsetHeight, saved: localStorage.getItem('slidex.outputHeight') };
       })()`);
       console.log('SELFTEST output resize', JSON.stringify(rs));
-      await ejs(`S.dirty = false; api.present(frameKeyOf(S.frame))`);
-      await wait(800);
-      const deckPage = await js('slidex.page');
-      console.log('SELFTEST present', JSON.stringify({ editorVisible: ew.isVisible(), deckPage }));
-      await openEditor(win);
-      await wait(500);
-      console.log('SELFTEST back to edit', JSON.stringify({ editorVisible: ew.isVisible() || ew.webContents.isLoading() === false && editors.has(ew.webContents.id) }));
       const img = await ew.webContents.capturePage();
       const out = (process.env.SLIDEX_SELFTEST_PNG || path.join(os.tmpdir(), 'slidex-selftest.png')).replace(/\.png$/, '-editor.png');
       fs.writeFileSync(out, img.toPNG());
-      ew.setSize(1100, 700); await wait(600);
-      fs.writeFileSync(out.replace(/\.png$/, '-narrow.png'), (await ew.webContents.capturePage()).toPNG());
       console.log('SELFTEST editor screenshot', out);
+      {                                    // mode switches: Present / Edit / Compile & Present / close
+        const vis = () => ({ editor: ew.isVisible(), deck: win.isVisible(),
+          presenter: [...(deckChildren.get(win.id) || [])].filter((c) => !c.isDestroyed()).map((c) => c.isVisible()) });
+        await ejs(`S.dirty = false; api.present(frameKeyOf(S.frame))`); await wait(800);
+        console.log('SELFTEST present', JSON.stringify({ ...vis(), deckPage: await js('slidex.page') }));
+        await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))`); await wait(1500);
+        console.log('SELFTEST presenter opened', JSON.stringify(vis()));
+        await openEditor(win); await wait(800);
+        console.log('SELFTEST edit', JSON.stringify(vis()));
+        const t0 = Date.now();
+        await ejs(`(() => { const l = view.state.doc.line(cursorLine()); view.dispatch({ changes: { from: l.to, insert: ' X' } });
+          setTimeout(() => document.getElementById('btn-compile-present').click(), 500); })()`);   // click while Live compiles
+        for (let i = 0; i < 80 && ew.isVisible(); i++) await wait(250);
+        console.log('SELFTEST compile and present', JSON.stringify({ ...vis(), seconds: ((Date.now() - t0) / 1000).toFixed(1) }));
+        await openEditor(win); await wait(800);
+        await ejs(`view.dispatch({ changes: { from: view.state.doc.line(cursorLine()).to - 2, to: view.state.doc.line(cursorLine()).to } }); save()`);   // undo the test edit on disk
+        await wait(500);
+        ew.close(); await wait(800);
+        console.log('SELFTEST editor closed', JSON.stringify({ deck: win.isVisible() }));
+        win.hide();
+        for (const c of deckChildren.get(win.id) || []) if (!c.isDestroyed()) c.close();
+      }
     }
     if (process.env.SLIDEX_SELFTEST_NOTES) {     // notes round trip through the server
       const nf = path.resolve(pdf) + '.notes.json';

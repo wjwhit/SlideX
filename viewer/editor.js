@@ -241,8 +241,10 @@ async function save() {
 
 /* Save, then build the whole deck: the presenter reloads and the slide
  * strip is redrawn. */
+/* Returns true when a deck PDF was built (it may still carry LaTeX errors). */
 async function compileDeck() {
-  if (S.compiling) return false;
+  clearTimeout(liveTimer);
+  while (S.compiling) await new Promise((r) => setTimeout(r, 100));   // let a slide compile finish
   S.compiling = true;
   $('btn-deck').disabled = true;
   status('Compiling the whole deck…');
@@ -254,8 +256,8 @@ async function compileDeck() {
     setDirty(false);
     showErrors(r.errors || []);
     status(r.ok ? `Deck compiled in ${(r.ms / 1000).toFixed(1)} s` : `Deck: ${r.errors.length} error(s)`, r.ok ? 'good' : 'bad');
-    if (r.ok) await renderStrip(true);
-    return r.ok;
+    if (r.built) await renderStrip(true);
+    return !!r.built;
   } catch (err) {
     status('Compile failed: ' + err.message, 'bad');
     return false;

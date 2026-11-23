@@ -312,7 +312,7 @@ async function compileDeck(texPath) {
     fs.renameSync(tmp, pdf);
   }
   const log = safeRead(logPath) || r.out;
-  return { ok: r.code === 0 && fs.existsSync(built), pdf, errors: parseLog(log), ms: r.ms, fmt: !!fmt, log };
+  return { ok: r.code === 0 && fs.existsSync(built), built: fs.existsSync(built), pdf, errors: parseLog(log), ms: r.ms, fmt: !!fmt, log };
 }
 
 function safeRead(p) { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } }
