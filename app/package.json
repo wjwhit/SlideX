@@ -1,0 +1,17 @@
+{
+  "name": "slidex",
+  "productName": "SlideX",
+  "version": "0.5.0",
+  "description": "PDF slide presenter for beamer decks: movies that play, presenter view, laser, magnifier, speaker notes",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "sync-viewer": "rm -rf viewer && cp -R ../viewer viewer",
+    "start": "npm run sync-viewer && electron .",
+    "package": "npm run sync-viewer && node build.js",
+    "dmg": "npm run package && bash make_dmg.sh"
+  },
+  "devDependencies": {
+    "electron": "45.2.3"
+  }
+}

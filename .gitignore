@@ -1,0 +1,23 @@
+# Electron and builds (npm install / npm run dmg recreate them)
+app/node_modules/
+app/dist/
+# copy of ../viewer made by "npm run sync-viewer"
+app/viewer/
+
+# LaTeX byproducts
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.smv
+
+# speaker notes are personal to each deck
+*.notes.json
+
+__pycache__/
+.DS_Store

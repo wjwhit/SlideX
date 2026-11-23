@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SlideX</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<div id="audience" class="screen">
+  <div id="stage" class="slidebox"></div>
+  <div class="toolbar" id="a-toolbar">
+    <button type="button" data-tool="laser" title="Laser pointer (l)">Laser</button>
+    <button type="button" data-tool="lens" title="Magnifier (m; scroll to change power)">Magnifier</button>
+    <button type="button" data-act="restart" title="Restart this slide's movies (r)">Restart movies</button>
+    <button type="button" data-act="presenter" title="Presenter window (s)">Presenter</button>
+    <button type="button" data-act="help" title="Keys (?)">?</button>
+  </div>
+</div>
+
+<div id="presenter" class="screen" hidden>
+  <div id="p-current" class="slidebox"></div>
+  <div id="p-side">
+    <div id="p-next-label">Next</div>
+    <div id="p-next" class="slidebox"></div>
+    <div id="p-notes" class="slidebox" hidden></div>
+    <div id="p-memo">
+      <div class="memo-head"><span>Notes, <span id="memo-label"></span></span><span id="memo-status"></span></div>
+      <textarea id="memo" spellcheck="true" placeholder="Speaker notes for this slide. Saved next to the PDF; overlay steps of one slide share them. (e to type, Esc to leave)"></textarea>
+    </div>
+  <div class="toolbar" id="p-toolbar">
+    <button type="button" data-tool="laser" title="Laser pointer (l)">Laser</button>
+    <button type="button" data-tool="lens" title="Magnifier (m; scroll to change power)">Magnifier</button>
+    <button type="button" data-act="restart" title="Restart this slide's movies (r)">Restart movies</button>
+    <button type="button" data-act="help" title="Keys (?)">?</button>
+  </div>
+    <div id="p-info">
+      <div id="p-count"></div>
+      <div id="p-timer" title="t resets">0:00</div>
+      <div id="p-clock"></div>
+    </div>
+  </div>
+</div>
+
+<div id="cover"></div>
+<div id="goto" hidden></div>
+<div id="toast" hidden></div>
+<div id="help" hidden>
+  <h2>SlideX keys</h2>
+  <table>
+    <tr><td>→ ↓ Space PgDn Enter n</td><td>next page</td></tr>
+    <tr><td>← ↑ PgUp Backspace p</td><td>previous page</td></tr>
+    <tr><td>Home / End</td><td>first / last page</td></tr>
+    <tr><td><i>number</i> then Enter</td><td>go to page</td></tr>
+    <tr><td>f</td><td>full screen</td></tr>
+    <tr><td>s</td><td>open the presenter window (current, next, timer)</td></tr>
+    <tr><td>b or . / w</td><td>black / white screen</td></tr>
+    <tr><td>k, or click a movie</td><td>pause or play the movies on this page</td></tr>
+    <tr><td>r</td><td>restart the movies on this page</td></tr>
+    <tr><td>[ / ]</td><td>pause and step the movies one frame back / forward</td></tr>
+    <tr><td><i>hover a movie</i></td><td>slider: drag to scrub (the other window follows)</td></tr>
+    <tr><td>l</td><td>laser pointer (move the mouse over the slide, in either window)</td></tr>
+    <tr><td>m</td><td>magnifier; scroll to change its power</td></tr>
+    <tr><td>e</td><td>type speaker notes (presenter window); Esc to leave the box</td></tr>
+    <tr><td>t</td><td>reset the presenter timer</td></tr>
+    <tr><td>Esc</td><td>turn off the laser or magnifier, close this help; otherwise leave full screen</td></tr>
+    <tr><td>?</td><td>this help</td></tr>
+  </table>
+</div>
+
+<script src="vendor/pdf.min.js"></script>
+<script src="viewer.js"></script>
+<script src="tools.js"></script>
+</body>
+</html>

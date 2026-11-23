@@ -1,0 +1,140 @@
+% slidemovie.sty -- movies and GIFs in beamer that actually play.
+%
+% The PDF keeps a still poster frame where the movie goes, so it prints and
+% shows correctly in any PDF viewer. The poster is wrapped in a link whose
+% target names the movie file plus playback options. The slidemovie viewer
+% (slidemovie.py present deck.pdf) reads those links and plays the real movie
+% on top of the poster, pixel-aligned, with beamer overlays respected.
+%
+%   \slidemovie[<options>]{<movie file>}
+%
+% Options (anything else, e.g. width, height, trim, clip, keepaspectratio,
+% is passed to \includegraphics for the poster):
+%   frame=first|middle|last|<seconds>
+%                    which frame stands in for the movie: in the PDF (the
+%                    poster) and in the viewer before a noautoplay movie is
+%                    started (default first, i.e. the start= time)
+%   poster=<file>    poster image (default: <movie>.png, or <movie>.<frame>.png
+%                    for another frame, e.g. run.mp4.last.png); if missing, a
+%                    grey box. "slidemovie.py posters <deck>" makes every
+%                    missing poster after a LaTeX run (from <deck>.smv)
+%   autoplay / noautoplay   start when the slide appears (default autoplay)
+%   loop / noloop           repeat (default loop)
+%   audio                   play with sound (default muted)
+%   controls                show the browser's playback bar
+%   slider                  always show the slidemovie scrub bar (it otherwise
+%                           appears when the mouse is over the movie)
+%   rate=<x>                playback speed (default 1)
+%   start=<s>, end=<s>      play only this time window, in seconds
+%   continue / restart      when the same movie sits at the same place on the
+%                           next overlay page, keep playing (default continue)
+%                           or start over (restart)
+%
+% Movie paths are relative to the PDF, like \includegraphics paths relative to
+% the .tex. Supported: .mp4 .m4v .mov .webm (H.264 mp4 is the safe choice),
+% and .gif.
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{slidemovie}[2026/11/23 v0.2 Movies and GIFs for beamer via the slidemovie viewer]
+\RequirePackage{graphicx}
+\RequirePackage{pgfkeys}
+\RequirePackage{hyperref}
+
+\newif\ifsm@autoplay
+\newif\ifsm@loop
+\newif\ifsm@audio
+\newif\ifsm@controls
+\newif\ifsm@continue
+\newif\ifsm@slider
+\def\sm@poster{}
+\def\sm@rate{1}
+\def\sm@start{}
+\def\sm@end{}
+\def\sm@gfx{}
+\def\sm@frame{first}
+\def\sm@first{first}
+\newsavebox\sm@box
+% size in bp (PDF units) of a TeX dimension
+\def\sm@bp#1{\strip@pt\dimexpr0.99626\dimexpr#1\relax\relax}
+\begingroup\catcode`\#=12 \gdef\sm@hash{#}\endgroup
+
+\pgfkeys{/slidemovie/.is family, /slidemovie,
+  poster/.code     = {\def\sm@poster{#1}},
+  frame/.code      = {\edef\sm@frame{#1}},
+  autoplay/.code   = {\sm@autoplaytrue},
+  noautoplay/.code = {\sm@autoplayfalse},
+  loop/.code       = {\sm@looptrue},
+  noloop/.code     = {\sm@loopfalse},
+  audio/.code      = {\sm@audiotrue},
+  muted/.code      = {\sm@audiofalse},
+  controls/.code   = {\sm@controlstrue},
+  slider/.code     = {\sm@slidertrue},
+  continue/.code   = {\sm@continuetrue},
+  restart/.code    = {\sm@continuefalse},
+  rate/.code       = {\def\sm@rate{#1}},
+  start/.code      = {\def\sm@start{#1}},
+  end/.code        = {\def\sm@end{#1}},
+  width/.code      = {\def\sm@w{#1}\sm@addgfx{width}{#1}},
+  height/.code     = {\def\sm@h{#1}\sm@addgfx{height}{#1}},
+  .unknown/.code   = {%
+    \ifx\pgfkeysnovalue#1\relax
+      \edef\sm@gfx{\sm@gfx,\pgfkeyscurrentname}%
+    \else
+      \expandafter\sm@addgfx\expandafter{\pgfkeyscurrentname}{#1}%
+    \fi},
+}
+\def\sm@addgfx#1#2{%
+  \toks@\expandafter{\sm@gfx}%
+  \edef\sm@gfx{\the\toks@,#1=\unexpanded{#2}}}
+
+% Every movie and the poster it needs go to \jobname.smv, one per line
+% (movie|frame|start|end|poster), for "slidemovie.py posters".
+\newwrite\sm@list
+\AtBeginDocument{\immediate\openout\sm@list=\jobname.smv\relax}
+\AtEndDocument{\immediate\closeout\sm@list}
+
+% Grey placeholder when there is no poster image (sized by width/height).
+\newcommand\sm@placeholder[1]{%
+  \begingroup
+  \ifx\sm@w\@empty\def\sm@w{0.6\linewidth}\fi
+  \ifx\sm@h\@empty\def\sm@h{0.5625\dimexpr\sm@w\relax}\fi
+  \setlength\fboxsep{0pt}%
+  \colorbox[gray]{0.85}{\parbox[c][\sm@h][c]{\sm@w}{\centering\ttfamily\footnotesize
+    \textcolor[gray]{0.35}{movie: \detokenize{#1}}}}%
+  \endgroup}
+
+\newcommand\slidemovie[2][]{%
+  \begingroup
+  \sm@autoplaytrue\sm@looptrue\sm@audiofalse\sm@controlsfalse\sm@continuetrue\sm@sliderfalse
+  \def\sm@poster{}\def\sm@gfx{}\def\sm@w{}\def\sm@h{}\def\sm@frame{first}%
+  \pgfkeys{/slidemovie,#1}%
+  \ifx\sm@poster\@empty
+    \ifx\sm@frame\sm@first\def\sm@poster{#2.png}\else\edef\sm@poster{#2.\sm@frame.png}\fi
+  \fi
+  \immediate\write\sm@list{#2|\sm@frame|\sm@start|\sm@end|\sm@poster}%
+  % The poster (or placeholder), boxed first so its exact size can go in the link:
+  % PDF link rectangles are padded (pdfTeX adds 1pt on each side), so the viewer
+  % uses this size, centered in the link, to place the movie exactly on the poster.
+  \sbox\sm@box{%
+    \IfFileExists{\sm@poster}%
+      {\edef\sm@do{\noexpand\includegraphics[\sm@gfx]{\sm@poster}}\sm@do}%
+      {\PackageWarning{slidemovie}{No poster `\sm@poster' for `#2';
+         run: slidemovie.py posters \jobname}%
+       \sm@placeholder{#2}}}%
+  % Option string carried in the link fragment, read by the viewer.
+  \edef\sm@opts{slidemovie%
+    \ifsm@autoplay\else;noautoplay\fi
+    \ifsm@loop\else;noloop\fi
+    \ifsm@audio;audio\fi
+    \ifsm@controls;controls\fi
+    \ifsm@slider;slider\fi
+    \ifsm@continue\else;restart\fi
+    ;rate=\sm@rate
+    \ifx\sm@start\@empty\else;start=\sm@start\fi
+    \ifx\sm@end\@empty\else;end=\sm@end\fi
+    \ifx\sm@frame\sm@first\else;frame=\sm@frame\fi
+    ;w=\sm@bp{\wd\sm@box};h=\sm@bp{\ht\sm@box+\dp\sm@box}}%
+  \edef\sm@url{#2\sm@hash\sm@opts}%
+  \leavevmode
+  \expandafter\href\expandafter{\sm@url}{\usebox\sm@box}%
+  \endgroup}
+\endinput
