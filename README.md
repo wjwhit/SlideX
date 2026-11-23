@@ -93,3 +93,8 @@ visits pages, `SLIDEX_SELFTEST_PNG=out.png` saves screenshots,
 - Apple notarization, so the first open needs no extra step.
 - Ideas: an assisted beamer editor (fast one-slide preview, click a slide to jump
   to its source, drag handles that rewrite sizes, drop-in movies).
+
+## License
+
+MIT, see [LICENSE](LICENSE). pdf.js (in `viewer/vendor/`) is Apache-2.0 and
+keeps its own notice; Electron is MIT.

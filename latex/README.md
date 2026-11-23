@@ -85,3 +85,7 @@ folder (`../figures/...`), pass `--root` with a folder that holds both.
 - A PDF made with `animate` is not played; re-encode its frames with `slidemovie.py encode`.
 - GIFs can be restarted but not paused; convert them to mp4 for full control.
 - Sound starts only after one key press (a browser rule); movies are muted by default.
+
+## License
+
+MIT, like the rest of SlideX: see [LICENSE](../LICENSE).
