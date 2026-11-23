@@ -170,7 +170,7 @@ function openDeck(pdfPath, opts = {}) {
     setupWindow(win);
   }
   deckOf.set(win.webContents.id, pdfPath);
-  win.setRepresentedFilename(pdfPath);
+  if (process.platform === 'darwin') win.setRepresentedFilename(pdfPath);   // macOS title-bar proxy icon
   win.loadURL(url);
   if (missing.length && !opts.hidden) {
     dialog.showMessageBox(win, { type: 'warning', message: 'Some movies are missing',

@@ -19,7 +19,7 @@ presenter window shows the current and next slide, a timer and your notes.
 
 ## Install
 
-Download `SlideX-<version>-arm64.dmg` (see Releases, or build it below), open it
+Download `SlideX-<version>-arm64.dmg` (see Releases, or build it: see Building), open it
 and drag SlideX to Applications. SlideX is not notarized by Apple yet, so the
 first open needs one step: System Settings > Privacy & Security > "Open Anyway".
 
@@ -54,20 +54,45 @@ beamer's frame number, so every overlay step of a slide shows the same note.
 
 ## Building
 
-Needs Node.js (and Python 3 with Pillow for the icon).
+No DMG? Three ways to get SlideX running from this repository. Each was tested
+from a fresh clone on an Apple-silicon Mac with Node.js 25.
+
+**1. Build the app (macOS).** Needs [Node.js](https://nodejs.org) (`brew install node`).
 
 ```bash
-cd app
-npm install
-node node_modules/electron/install.js   # only if npm skipped Electron's binary download
-npm start                               # run from source
-npm run dmg                             # build app/dist/SlideX.app and SlideX-<version>-arm64.dmg
+git clone https://github.com/wjwhit/SlideX.git
+cd SlideX/app
+npm install        # also downloads Electron (about 100 MB, once)
+npm run dmg        # makes app/dist/SlideX.app and app/dist/SlideX-<version>-arm64.dmg
 ```
 
-The build is signed ad hoc. `SlideX.app/Contents/MacOS/SlideX --selftest deck.pdf`
-opens a deck off screen and reports what it plays (`SLIDEX_SELFTEST_PAGES=4,10`
-visits pages, `SLIDEX_SELFTEST_PNG=out.png` saves screenshots,
-`SLIDEX_SELFTEST_NOTES=1` checks saving notes).
+Drag `app/dist/SlideX.app` to Applications. A build you make yourself opens
+without the "Open Anyway" step. `npm run package` makes only the app, no DMG.
+
+**2. Run from source (any platform Electron supports).** After `npm install`:
+
+```bash
+npm start          # opens SlideX straight from the source files
+```
+
+This is the quickest loop when changing the code. Packaging (`npm run package`
+and `npm run dmg`) uses macOS tools (`ditto`, `PlistBuddy`, `codesign`,
+`hdiutil`); `npm start` does not, but it has only been tried on macOS so far.
+
+**3. No install: present in a browser.** Needs only Python 3.
+
+```bash
+python3 latex/slidemovie.py present path/to/talk.pdf
+```
+
+This opens the same presenter in your web browser, with movies, the presenter
+window (`s`), laser, magnifier and notes. Use full screen with `f`.
+
+If `npm install` stops without Electron (`node_modules/electron/dist` missing),
+run `node node_modules/electron/install.js`. `SlideX.app/Contents/MacOS/SlideX
+--selftest deck.pdf` opens a deck off screen and reports what it plays
+(`SLIDEX_SELFTEST_PAGES=4,10` visits pages, `SLIDEX_SELFTEST_PNG=out.png` saves
+screenshots, `SLIDEX_SELFTEST_NOTES=1` checks saving notes).
 
 ## How it works
 
@@ -84,8 +109,8 @@ visits pages, `SLIDEX_SELFTEST_PNG=out.png` saves screenshots,
   [latex/README.md](latex/README.md)).
 - `example/`: a demo deck (`TEXINPUTS=../latex: pdflatex demo.tex`).
 
-`npm run sync-viewer` copies `viewer/` into `app/viewer/` (done by `start` and
-`dmg`); edit `viewer/`, not the copy.
+`npm run sync-viewer` copies `viewer/` into `app/viewer/` (done by `start`,
+`package` and `dmg`); edit `viewer/`, not the copy.
 
 ## Roadmap
 

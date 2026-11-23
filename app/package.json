@@ -6,7 +6,8 @@
   "main": "main.js",
   "private": true,
   "scripts": {
-    "sync-viewer": "rm -rf viewer && cp -R ../viewer viewer",
+    "postinstall": "node -e \"require('fs').existsSync('node_modules/electron/dist') || require('child_process').execFileSync(process.execPath, ['node_modules/electron/install.js'], {stdio: 'inherit'})\"",
+    "sync-viewer": "node -e \"const fs=require('fs'); fs.rmSync('viewer', {recursive: true, force: true}); fs.cpSync('../viewer', 'viewer', {recursive: true})\"",
     "start": "npm run sync-viewer && electron .",
     "package": "npm run sync-viewer && node build.js",
     "dmg": "npm run package && bash make_dmg.sh"
