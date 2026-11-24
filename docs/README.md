@@ -11,7 +11,7 @@ is; the `slidemovie` package is only for movies. These pages walk through it wit
 |---|---|
 | [Presenting](presenting.md) | opening a deck, keys, the presenter window, laser, magnifier, slide panel, speaker notes |
 | [Movies and GIFs](movies.md) | the `slidemovie` package: putting a movie on a slide, options, posters, sending a deck |
-| [The editor](editor.md) | one-slide compiles, two-way highlighting, completion, resizing and moving, captions, text editing, errors, themes |
+| [The editor](editor.md) | one-slide compiles, two-way highlighting, completion, resizing and moving, deck settings, captions, text editing, errors, themes |
 | [Line-by-line highlighting](frames.md) | how the editor matches source lines and slides, and which frames it can |
 
 ## Try it with the example deck

@@ -118,6 +118,10 @@ building it first if its PDF is missing or older.
   (its coordinates are rewritten in their own units), a figure or box up or
   down (a `\vspace` pair around it), or a column divider; arrow keys nudge the
   selected item.
+- **Deck settings** (toolbar **Deck…**, Shift-Cmd-D): title page fields, theme,
+  colour and font themes, aspect ratio, the deck's colours and beamer's colour
+  slots, footline, headline and navigation symbols, all written into the
+  preamble (also through a style package's options).
 - **Right-click a figure or movie** to add or edit its caption.
 - **Drop images, movies, GIFs or folders of frames** on the editor: they are
   copied into `./figures/` (GIFs and frames become mp4 with a poster, needs

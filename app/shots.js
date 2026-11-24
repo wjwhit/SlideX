@@ -162,6 +162,14 @@ module.exports = async function shots(ctx) {
   await wait(500);
   await shot(ew, 'find');
 
+  // deck settings, on the title slide
+  await ejs(`(() => { const c = document.querySelector('.cm-search [name=close]'); if (c) c.click(); })()`);
+  await toFrame('title', 0);
+  await ejs(`(async () => { toggleDeckPanel(true); await new Promise((r) => setTimeout(r, 900)); })()`);
+  await shot(ew, 'deck-settings');
+  await ejs(`toggleDeckPanel(false)`);
+  await ejs(settle);
+
   // moving things: a node, a figure and a column divider mid-drag, then a node moved
   await ejs(`(() => { const c = document.querySelector('.cm-search [name=close]'); if (c) c.click(); })()`);
   await toFrame('place', 2);

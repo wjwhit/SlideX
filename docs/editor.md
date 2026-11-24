@@ -135,6 +135,34 @@ one-slide build itself (it reports the picture's unit vectors and the column
 width to its log), so the slide moves by what you dragged, within about a
 tenth of a millimetre.
 
+## Deck settings
+
+**Deck…** in the toolbar (or View > Deck Settings, Shift-Cmd-D) opens a panel
+beside the slide for the things set in the preamble. Each change is made in
+your `.tex` in the editor, so Cmd-Z undoes it and Live shows it on the slide
+(a change to the preamble rebuilds the precompiled preamble once, a few
+seconds).
+
+![The deck settings panel next to the title slide](images/deck-settings.png)
+
+- **Title page:** title, subtitle, author, institute and date, with their short
+  forms (used in footlines). The values are LaTeX. If your deck sets them
+  through a style package's options (`\usepackage[title={...}]{mystyle}`), the
+  panel shows and edits those options.
+- **Theme:** theme, colour theme and font theme (the lists are read from your
+  TeX installation and the folder), and the aspect ratio.
+- **Colours:** every colour the deck defines (`\definecolor`, in the deck, its
+  `\input` files or a style beside it). Changing one changes everything that
+  uses it: a colour from a style file gets an override line in your preamble,
+  and the style file is not touched. Below them, beamer's colour slots (frame
+  title, title, text, footline, ...): picking one adds a named colour and a
+  `\setbeamercolor` line; ↺ takes it back to the theme's.
+- **Header and footer:** footline presets (theme default, none, frame number,
+  author · title · n / N), the headline, and navigation symbols.
+
+New lines go before `\begin{document}`, after the rest of the preamble, so
+they win; a new theme line goes where the current theme is set.
+
 ## Captions
 
 Right-click a figure or a movie for **Add caption** (or **Edit caption**). A
@@ -185,4 +213,5 @@ macOS (the default). The choice is kept for the next time.
 | Cmd-F | find and replace |
 | Cmd-= / Cmd-- / Cmd-0 | bigger, smaller, default code text size |
 | arrow keys | move the selected figure or box (Shift: 5 mm, Option: 0.25 mm) |
+| Shift-Cmd-D | deck settings |
 | Cmd-Z / Shift-Cmd-Z | undo / redo |
