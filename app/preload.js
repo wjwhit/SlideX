@@ -26,4 +26,5 @@ contextBridge.exposeInMainWorld('slidexEditor', {
   onShown: (fn) => ipcRenderer.on('slidex-ed:shown', () => fn()),
   noteChange: (text, key, note) => ipcRenderer.invoke('slidex-ed:noteChange', text, key, note),
   onNote: (fn) => ipcRenderer.on('slidex-ed:note', (e, d) => fn(d)),
+  setPref: (k, v) => ipcRenderer.invoke('slidex-ed:setPref', k, v),
 });

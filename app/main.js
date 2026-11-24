@@ -5,7 +5,7 @@
 // File > Open, drag a PDF onto the window or the Dock icon, Finder "Open With",
 // or `SlideX.app/Contents/MacOS/SlideX deck.pdf`.
 'use strict';
-const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell, crashReporter } = require('electron');
 const editor = require('./editor');
 const notesLib = require('./notes');
 const http = require('http');
@@ -23,6 +23,28 @@ const VIEWER = path.join(__dirname, 'viewer');
   const exe = path.basename(process.execPath);
   const profile = exe === 'SlideX' ? null : exe === 'SlideX Dev' ? 'SlideX Dev' : 'SlideX (source)';
   if (profile) { app.setName(profile); app.setPath('userData', path.join(app.getPath('appData'), profile)); }
+}
+
+/* The log (app/log.js): ~/Library/Logs/<app name>/slidex.log. A window whose
+ * page crashed is offered a reload instead of staying blank. */
+const { log } = require('./log');
+require('./log').init(app, { crashReporter, onWindowGone: (wc, d) => {
+  const win = BrowserWindow.fromWebContents(wc);
+  if (!win || win.isDestroyed()) return;
+  const isEditor = editors.has(wc.id);
+  dialog.showMessageBox(win, { type: 'warning', buttons: ['Reload', 'Close Window'], defaultId: 0,
+    message: `This ${isEditor ? 'editor' : 'window'} stopped (${d.reason}).`,
+    detail: (isEditor ? 'Unsaved edits in it may be lost; your .tex on disk is as last saved. ' : '')
+      + 'Details are in the log: Help > Show Log File.' })
+    .then(({ response }) => { if (win.isDestroyed()) return; if (response === 0) wc.reload(); else win.close(); });
+} });
+
+/* Every IPC handler logs what it throws (the window still gets the error). */
+{
+  const handle = ipcMain.handle.bind(ipcMain);
+  ipcMain.handle = (channel, fn) => handle(channel, async (...args) => {
+    try { return await fn(...args); } catch (err) { log.error(`${channel}:`, err); throw err; }
+  });
 }
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript',
@@ -162,7 +184,8 @@ const deckOf = new Map();   // webContents id -> pdf path
 
 function openDeck(pdfPath, opts = {}) {
   pdfPath = path.resolve(pdfPath);
-  if (!fs.existsSync(pdfPath)) { dialog.showErrorBox('SlideX', `No such file:\n${pdfPath}`); return null; }
+  log.info('open deck', pdfPath);
+  if (!fs.existsSync(pdfPath)) { log.warn('no such file', pdfPath); dialog.showErrorBox('SlideX', `No such file:\n${pdfPath}`); return null; }
   const { root, movies, missing } = deckRoot(pdfPath);
   let idx = decks.indexOf(root);
   if (idx < 0) { decks.push(root); idx = decks.length - 1; }
@@ -329,6 +352,7 @@ async function openEditor(deckWin) {
     if (r.canceled || !r.filePaths.length) return;
     texPath = r.filePaths[0];
   }
+  log.info('open editor', texPath);
   for (const [id, st] of editors) {
     if (st.texPath === texPath && !st.win.isDestroyed()) {   // back to edit mode
       st.deckWin = deckWin;
@@ -401,7 +425,7 @@ ipcMain.handle('slidex-ed:init', async (e) => {
   const pf = await pageFrames(st).catch(() => []);
   let deckPage = 0;
   try { deckPage = await st.deckWin.webContents.executeJavaScript('window.slidex ? slidex.page : 0'); } catch { /* closed */ }
-  return { texName: path.basename(st.texPath), text, frames: st.frames, deckUrl: st.deckUrl, pageFrames: pf, deckPage };
+  return { texName: path.basename(st.texPath), text, frames: st.frames, deckUrl: st.deckUrl, pageFrames: pf, deckPage, prefs: getPrefs() };
 });
 
 ipcMain.handle('slidex-ed:compileFrame', async (e, text, line) => {
@@ -416,7 +440,7 @@ ipcMain.handle('slidex-ed:compileFrame', async (e, text, line) => {
     st.sync = await editor.loadSync(st.texPath, r, frame).catch(() => null);
     st.syncFrame = frame;
   }
-  return { ok: r.ok, url: r.pdf ? urlFor(st.root, r.pdf) : null, key: r.key, name: r.name, exact: !!(st.sync && st.sync.exact),
+  return { ok: r.ok, probes: r.probes, url: r.pdf ? urlFor(st.root, r.pdf) : null, key: r.key, name: r.name, exact: !!(st.sync && st.sync.exact),
     frames: st.frames, errors: mapErrors(st, r.errors || [], r), ms: r.ms, fmt: r.fmt, log: tailLog(r.log) };
 });
 
@@ -426,6 +450,8 @@ ipcMain.handle('slidex-ed:compileDeck', async (e, text) => {
   st.frames = editor.parseFrames(text);
   const r = await editor.compileDeck(st.texPath);
   if (r.built) reloadDeckWindows(st.pdfPath);
+  log.info(`deck build ${r.ok ? 'ok' : 'with errors'} in ${(r.ms / 1000).toFixed(1)} s: ${path.basename(st.texPath)}`
+    + (r.errors && r.errors.length ? ` (${r.errors.length} error(s), first: ${String(r.errors[0].message).slice(0, 120)})` : ''));
   const pf = await pageFrames(st).catch(() => []);
   return { ok: r.ok, built: r.built, frames: st.frames, errors: mapErrors(st, r.errors || []), ms: r.ms, pageFrames: pf, log: tailLog(r.log) };
 });
@@ -565,11 +591,26 @@ ipcMain.handle('slidex:fullscreen', (e) => {
 });
 
 /* ----------------------------------------------------------------- menu */
+/* Editor settings (theme, code text size, output height) in <profile>/prefs.json:
+ * the editor page's own storage is tied to the server's port, which changes. */
+const prefsFile = () => path.join(app.getPath('userData'), 'prefs.json');
+let prefs = null;
+function getPrefs() { if (!prefs) { try { prefs = JSON.parse(fs.readFileSync(prefsFile(), 'utf8')) || {}; } catch { prefs = {}; } } return prefs; }
+function setPref(k, v) {
+  if (!/^slidex\.[A-Za-z]+$/.test(k) || JSON.stringify(v).length > 200) return;
+  getPrefs()[k] = v;
+  try { fs.writeFileSync(prefsFile(), JSON.stringify(prefs, null, 2)); } catch (err) { log.warn('prefs not saved:', err); }
+}
+ipcMain.handle('slidex-ed:setPref', (e, k, v) => setPref(k, v));
+function themeAll(t) {                                  // every editor window, and the next ones
+  setPref('slidex.theme', t);
+  for (const st of editors.values()) if (!st.win.isDestroyed()) editCommand(st.win, 'theme:' + t);
+}
 function editCommand(w, name) {
   if (!w) return;
   const wc = w.webContents;
   if (editors.has(wc.id)) { wc.executeJavaScript(`window.editorCommand && editorCommand(${JSON.stringify(name)})`).catch(() => {}); return; }
-  if (/^font/.test(name)) return;                     // code text size: editor windows only
+  if (/^(font|theme)/.test(name)) return;             // code text size and theme: editor windows only
   if (name === 'undo') wc.undo();
   else if (name === 'redo') wc.redo();
   else if (name === 'selectAll') wc.selectAll();
@@ -607,6 +648,11 @@ function buildMenu() {
       { label: 'Bigger Code Text', accelerator: 'CmdOrCtrl+=', click: (_, w) => editCommand(w, 'fontBigger') },
       { label: 'Smaller Code Text', accelerator: 'CmdOrCtrl+-', click: (_, w) => editCommand(w, 'fontSmaller') },
       { label: 'Default Code Text Size', accelerator: 'CmdOrCtrl+0', click: (_, w) => editCommand(w, 'fontReset') },
+      { label: 'Editor Theme', submenu: [
+        { label: 'Follow macOS', click: () => themeAll('system') },
+        { label: 'Light', click: () => themeAll('light') },
+        { label: 'Dark', click: () => themeAll('dark') },
+      ] },
       { type: 'separator' },
       { label: 'Keyboard Shortcuts', accelerator: 'CmdOrCtrl+/',
         click: (_, w) => w && w.webContents.executeJavaScript("document.dispatchEvent(new KeyboardEvent('keydown',{key:'?'}))") },
@@ -616,6 +662,10 @@ function buildMenu() {
       { role: 'toggleDevTools' },
     ] },
     { role: 'windowMenu' },
+    { role: 'help', submenu: [
+      { label: 'Show Log File', click: () => { if (log.file && fs.existsSync(log.file)) shell.showItemInFolder(log.file); } },
+      { label: 'Open Log File', click: () => { if (log.file && fs.existsSync(log.file)) shell.openPath(log.file); } },
+    ] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -676,6 +726,16 @@ async function runSelftest(pdf) {
     if (process.env.SLIDEX_SELFTEST_EVAL) {          // any check in the deck window
       console.log('SELFTEST eval', JSON.stringify(await js(process.env.SLIDEX_SELFTEST_EVAL)));
     }
+    if (process.env.SLIDEX_SELFTEST_CRASHLOG) {      // the log: a console error, an uncaught error, a renderer crash
+      await js(`console.error('selftest console error'); setTimeout(() => { throw new Error('selftest uncaught error'); }, 0); 1`);
+      await wait(500);
+      win.webContents.forcefullyCrashRenderer();
+      await wait(2500);
+      const boxes = BrowserWindow.getAllWindows().length;
+      const text = fs.readFileSync(log.file, 'utf8').split('\n').slice(-12).join('\n');
+      console.log('SELFTEST crashlog', JSON.stringify({ file: log.file, consoleError: text.includes('selftest console error'),
+        uncaught: text.includes('selftest uncaught error'), crash: /CRASH +window process gone/.test(text), windows: boxes }));
+    }
     if (process.env.SLIDEX_SELFTEST_OPENEDITOR) {    // smoke test: open the editor, report, close (no edits, no saves)
       const errs = [];
       app.on('web-contents-created', (ev, wc) => wc.on('console-message', (e2, level, msg) => { if (level >= 3) errs.push(msg); }));
@@ -693,6 +753,11 @@ async function runSelftest(pdf) {
         if (process.env.SLIDEX_SELFTEST_EDITJS) {      // a check of your own, run in the editor
           const out = await ew.webContents.executeJavaScript(process.env.SLIDEX_SELFTEST_EDITJS).catch((err) => 'eval failed: ' + err.message);
           console.log('SELFTEST editjs', JSON.stringify(out));
+        }
+        if (process.env.SLIDEX_SELFTEST_EDITPNG) {     // a screenshot of the editor
+          const img = await ew.webContents.capturePage();
+          fs.writeFileSync(process.env.SLIDEX_SELFTEST_EDITPNG, img.toPNG());
+          console.log('SELFTEST editpng', process.env.SLIDEX_SELFTEST_EDITPNG);
         }
         ew.destroy();
       }

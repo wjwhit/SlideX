@@ -256,6 +256,41 @@ function isNumbered(f, lines) {
 const COPY_ENV = 'slidexcopyframe';
 const COPY_DEF = `\\newenvironment{${COPY_ENV}}[2]{\\begin{frame}[environment=${COPY_ENV},fragile,#1]{#2}}{\\ifhmode\\par\\fi\\end{frame}}`;
 
+/* Measurements the editor needs to turn a drag into source units, written to
+ * the one-slide build's log only (\write-1), never into the slide:
+ *   SLIDEXUNIT <line> ax ay bx by   TikZ node placed `at (...)`: the picture's x and y unit
+ *                                   vectors (pt, after its transformations)
+ *   SLIDEXLW <line> w               first \column of a columns block: \linewidth there
+ *   SLIDEXTP <line> h v             textpos block: \TPHorizModule, \TPVertModule */
+const PROBE_DEF = '\\def\\slidexpd#1#2{\\pgfpointdiff{\\pgfpointtransformed{\\pgfpointorigin}}{\\pgfpointtransformed{\\pgfpointxy{#1}{#2}}}}'
+  + '\\def\\slidexpu#1{{\\pgfextractx{\\dimen0}{\\slidexpd{1}{0}}\\pgfextracty{\\dimen2}{\\slidexpd{1}{0}}'
+  + '\\pgfextractx{\\dimen4}{\\slidexpd{0}{1}}\\pgfextracty{\\dimen6}{\\slidexpd{0}{1}}'
+  + '\\immediate\\write-1{SLIDEXUNIT #1 \\the\\dimen0/\\the\\dimen2/\\the\\dimen4/\\the\\dimen6}}}'
+  + '\\def\\slidexplw#1{\\immediate\\write-1{SLIDEXLW #1 \\the\\linewidth}}'
+  + '\\def\\slidexptp#1{\\ifdefined\\TPHorizModule\\immediate\\write-1{SLIDEXTP #1 \\the\\TPHorizModule/\\the\\TPVertModule}\\fi}';
+
+/* Lines of the frame to probe: {line -> '\\slidexpu'|'\\slidexplw'|'\\slidexptp'}. */
+function probeLines(lines, frame) {
+  const out = {};
+  const nc = (t) => t.replace(/(^|[^\\])%.*$/, '$1');
+  let overlay = 0, depth = 0, firstCol = [];
+  for (let l = frame.start + 1; l < frame.end; l++) {
+    const t = nc(lines[l - 1] || '');
+    if (/\\begin\{tikzpicture\}/.test(t)) {
+      depth++;
+      const head = [t, nc(lines[l] || ''), nc(lines[l + 1] || '')].join(' ');
+      if (/\\begin\{tikzpicture\}\s*\[[^\]]*\boverlay\b/.test(head) || /\\begin\{tikzpicture\}\s*\[[^\]]*$/.test(t) && /\boverlay\b/.test(head)) overlay = depth;
+    }
+    if (depth && /\\node\b[^;]*?\bat\s*\(/.test(t)) out[l] = '\\slidexpu';
+    if (/\\end\{tikzpicture\}/.test(t)) { if (overlay === depth) overlay = 0; depth = Math.max(0, depth - 1); }
+    if (/\\begin\{columns\}/.test(t)) firstCol.push(true);
+    if (/\\end\{columns\}/.test(t)) firstCol.pop();
+    if (firstCol.length && firstCol[firstCol.length - 1] && /^\s*\\(?:column\b|begin\{column\})/.test(t)) { out[l] = '\\slidexplw'; firstCol[firstCol.length - 1] = false; }
+    if (/\\begin\{textblock\*?\}/.test(t)) out[l] = '\\slidexptp';
+  }
+  return out;
+}
+
 function frameHeader(line) {
   const m = /\\begin\{frame\}/.exec(line);
   if (!m) return null;
@@ -307,6 +342,9 @@ function oneSlideSource(text, frames, frame, firstPage, opts = {}) {
       opts.madeFragile = true;
     }
   }
+  const probes = probeLines(text.split('\n'), frame);
+  // after the indentation, which TeX skips (in front of it the tabs would become a space)
+  for (const [l, cmd] of Object.entries(probes)) lines[l - 1] = lines[l - 1].replace(/^\s*/, (ws) => ws + `${cmd}{${l}}`);
   for (const g of frames) {
     if (g.index === frame.index) continue;
     for (let i = g.start - 1; i < g.end && i < lines.length; i++) lines[i] = '';
@@ -314,7 +352,7 @@ function oneSlideSource(text, frames, frame, firstPage, opts = {}) {
   const fnum = frames.filter((g) => g.index < frame.index && isNumbered(g, text.split('\n'))).length;
   // fastest zlib level: pages identical, compiles of image-heavy slides about
   // 35% faster, files about the size of the deck's (level 0 would be 5-10x larger)
-  let set = `\\pdfcompresslevel=1 \\setcounter{framenumber}{${fnum}}`;
+  let set = `\\pdfcompresslevel=1 ${Object.keys(probes).length ? PROBE_DEF : ''}\\setcounter{framenumber}{${fnum}}`;
   if (firstPage != null) set += `\\setcounter{page}{${firstPage}}`;
   lines[frame.start - 1] = set + lines[frame.start - 1];
   return lines.join('\n');
@@ -348,6 +386,11 @@ async function compileFrame(texPath, frame, text, opts = {}) {
   const pdf = path.join(bdir, `${job}.pdf`);
   const log = safeRead(path.join(bdir, `${job}.log`)) || r.out;
   const errors = parseLog(log);
+  const probes = { units: {}, lw: {}, tp: {} };
+  const pt = (v) => parseFloat(v);
+  for (const m of (log || '').matchAll(/^SLIDEXUNIT (\d+) (\S+)pt\/(\S+)pt\/(\S+)pt\/(\S+)pt$/gm)) probes.units[m[1]] = [pt(m[2]), pt(m[3]), pt(m[4]), pt(m[5])];
+  for (const m of (log || '').matchAll(/^SLIDEXLW (\d+) (\S+)pt$/gm)) probes.lw[m[1]] = pt(m[2]);
+  for (const m of (log || '').matchAll(/^SLIDEXTP (\d+) (\S+)pt\/(\S+)pt$/gm)) probes.tp[m[1]] = [pt(m[2]), pt(m[3])];
   const ok = r.code === 0 && fs.existsSync(pdf);
   if (so.madeFragile && (!ok || errors.length)) {
     // a frame that cannot be fragile (or a real error): try it as written;
@@ -359,7 +402,7 @@ async function compileFrame(texPath, frame, text, opts = {}) {
     await run('pdflatex', args, dir);
   }
   if (opts.fragile !== false) cleanBuildDir(texPath, { keepJob: job, jobSince: t0 });
-  return { ok, pdf: fs.existsSync(pdf) ? pdf : null, srcPath, frameStart: frame.start, frameEnd: frame.end, madeFragile: !!so.madeFragile,
+  return { ok, probes, pdf: fs.existsSync(pdf) ? pdf : null, srcPath, frameStart: frame.start, frameEnd: frame.end, madeFragile: !!so.madeFragile,
     synctex: path.join(bdir, `${job}.synctex.gz`), job, errors, ms: r.ms, key: frameKey(frame), name: frameName(frame), fmt: !!fmt, log };
 }
 

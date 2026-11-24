@@ -65,25 +65,55 @@ function decoFor(v, doc) {
 }
 
 let view;
-function makeEditor(text) {
+/* ------------------------------------------------------------- themes */
+/* Dark or light, or following macOS (View > Editor Theme); the choice is kept
+ * in localStorage. The page's colours switch with data-theme on <html>. */
+const themeComp = new CM.Compartment();
+function cmTheme(light) {
+  const c = light
+    ? { fg: '#1f2328', bg: '#ffffff', gutter: '#f6f7f9', gnum: '#8c939c', caret: '#000', act: 'rgba(0,0,0,.035)', actg: 'rgba(0,0,0,.05)', sel: 'rgba(61,139,253,.25)' }
+    : { fg: '#d8dbe0', bg: '#1b1d21', gutter: '#1b1d21', gnum: '#5c626b', caret: '#fff', act: 'rgba(255,255,255,.04)', actg: 'rgba(255,255,255,.06)', sel: 'rgba(61,139,253,.35)' };
   const theme = CM.EditorView.theme({
-    '&': { color: '#d8dbe0', backgroundColor: '#1b1d21' },
-    '.cm-content': { caretColor: '#fff' },
-    '.cm-gutters': { backgroundColor: '#1b1d21', color: '#5c626b', border: 'none' },
-    '.cm-activeLine': { backgroundColor: 'rgba(255,255,255,.04)' },
-    '.cm-activeLineGutter': { backgroundColor: 'rgba(255,255,255,.06)' },
-    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': { backgroundColor: 'rgba(61,139,253,.35)' },
-    '.cm-cursor': { borderLeftColor: '#fff' },
-  }, { dark: true });
+    '&': { color: c.fg, backgroundColor: c.bg },
+    '.cm-content': { caretColor: c.caret },
+    '.cm-gutters': { backgroundColor: c.gutter, color: c.gnum, border: 'none' },
+    '.cm-activeLine': { backgroundColor: c.act },
+    '.cm-activeLineGutter': { backgroundColor: c.actg },
+    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': { backgroundColor: c.sel },
+    '.cm-cursor': { borderLeftColor: c.caret },
+  }, { dark: !light });
+  const h = light
+    ? { comment: '#6a737d', kw: '#0550ae', atom: '#953800', br: '#57606a', str: '#0a3069', num: '#116329', v: '#8250df' }
+    : { comment: '#6a737d', kw: '#7cb7ff', atom: '#ffab70', br: '#9aa4b1', str: '#9ecbff', num: '#79d4a5', v: '#e2a3ff' };
   const hl = CM.HighlightStyle.define([
-    { tag: CM.tags.comment, color: '#6a737d', fontStyle: 'italic' },
-    { tag: [CM.tags.keyword, CM.tags.tagName], color: '#7cb7ff' },
-    { tag: CM.tags.atom, color: '#ffab70' },
-    { tag: CM.tags.bracket, color: '#9aa4b1' },
-    { tag: CM.tags.string, color: '#9ecbff' },
-    { tag: CM.tags.number, color: '#79d4a5' },
-    { tag: [CM.tags.variableName, CM.tags.typeName], color: '#e2a3ff' },
+    { tag: CM.tags.comment, color: h.comment, fontStyle: 'italic' },
+    { tag: [CM.tags.keyword, CM.tags.tagName], color: h.kw },
+    { tag: CM.tags.atom, color: h.atom },
+    { tag: CM.tags.bracket, color: h.br },
+    { tag: CM.tags.string, color: h.str },
+    { tag: CM.tags.number, color: h.num },
+    { tag: [CM.tags.variableName, CM.tags.typeName], color: h.v },
   ]);
+  return [theme, CM.syntaxHighlighting(hl)];
+}
+const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+function themeSetting() { try { return localStorage.getItem('slidex.theme') || 'system'; } catch { return 'system'; } }
+function isLight() { const t = themeSetting(); return t === 'light' || (t === 'system' && !darkQuery.matches); }
+function applyTheme() {
+  const light = isLight();
+  document.documentElement.dataset.theme = light ? 'light' : 'dark';
+  if (view) view.dispatch({ effects: themeComp.reconfigure(cmTheme(light)) });
+}
+function setTheme(t) {
+  try { localStorage.setItem('slidex.theme', t); } catch { /* no storage */ }
+  if (window.slidexEditor && slidexEditor.setPref) slidexEditor.setPref('slidex.theme', t);
+  applyTheme();
+  status(`Editor theme: ${t === 'system' ? 'follows macOS' : t}`);
+}
+darkQuery.addEventListener('change', () => { if (themeSetting() === 'system') applyTheme(); });
+applyTheme();
+
+function makeEditor(text) {
   view = new CM.EditorView({
     parent: $('code'),
     state: CM.EditorState.create({
@@ -91,7 +121,7 @@ function makeEditor(text) {
       extensions: [
         CM.lineNumbers(), CM.highlightActiveLineGutter(), CM.history(), CM.drawSelection(),
         CM.highlightActiveLine(), CM.bracketMatching(), CM.closeBrackets(), CM.highlightSelectionMatches(),
-        CM.StreamLanguage.define(CM.stex), CM.syntaxHighlighting(hl), theme, CM.EditorView.lineWrapping,
+        CM.StreamLanguage.define(CM.stex), themeComp.of(cmTheme(isLight())), CM.EditorView.lineWrapping,
         marksField,
         CM.search({ top: true }),
         window.SlidexComplete ? SlidexComplete.extension(() => S.info) : [],
@@ -214,7 +244,7 @@ async function compileFrame() {
       const nf = S.frames.find((x) => frameKeyOf(x) === r.key) || f;
       S.frame = nf;
       view.dispatch({ effects: setFrame.of({ start: nf.start, end: nf.end }) });
-      const p = { key: r.key, url: r.url + '?t=' + Date.now(), exact: r.exact,
+      const p = { key: r.key, url: r.url + '?t=' + Date.now(), exact: r.exact, probes: r.probes,
         page: S.preview && S.preview.key === r.key ? S.preview.page : 1 };
       S.cache.set(r.key, p);
       S.stale = S.version !== version;
@@ -327,6 +357,7 @@ function showLog(what, log, errors) {
     if (!drag) return;
     drag = null; handle.classList.remove('drag');
     try { localStorage.setItem('slidex.outputHeight', out.offsetHeight); } catch { /* no storage */ }
+    if (api && api.setPref) api.setPref('slidex.outputHeight', out.offsetHeight);
     renderPage().then(drawCursorBoxes);
   });
 }
@@ -443,7 +474,7 @@ async function showPreview(p) {
   $('placeholder').hidden = true;
   $('pagewrap').hidden = false;
   drawCursorBoxes();
-  findFigures();
+  S.figsReady = findFigures();
 }
 
 async function renderPage() {
@@ -633,6 +664,7 @@ async function findFigures() {
     figs.push({ kind: 'figure', line: l, box: b });
   }
   S.figs = figs.concat(await findBoxes());
+  await findMovables();
 }
 
 /* ------------------------------------------------ boxes: resize handles */
@@ -649,10 +681,10 @@ function unionOf(boxes) {
 
 /* The content of a box: every record of its lines, minus records that
  * enclose other records (e.g. a \makebox wrapped around the box). */
-async function contentBox(l0, l1) {
+async function contentBox(l0, l1, maxW = Infinity) {
   const all = [];
   for (let l = l0; l <= l1; l++) {
-    for (const b of (await api.boxesForLine(l)) || []) if (b.page === S.preview.page && b.w > 0 && b.h > 0) all.push(b);
+    for (const b of (await api.boxesForLine(l)) || []) if (b.page === S.preview.page && b.w > 0 && b.h > 0 && b.w <= maxW) all.push(b);
   }
   const holds = (a, b) => a !== b && b.x >= a.x - 0.5 && b.y >= a.y - 0.5 && b.x + b.w <= a.x + a.w + 0.5 && b.y + b.h <= a.y + a.h + 0.5
     && (b.w < a.w - 1 || b.h < a.h - 1);
@@ -720,7 +752,7 @@ async function findBoxes() {
     }
     if (!end) continue;
     const u = await contentBox(l + 1, end - 1);
-    if (u) out.push({ kind: 'tcolorbox', line: l, box: toFrame(u) });
+    if (u) out.push({ kind: 'tcolorbox', line: l, end, box: toFrame(u) });
   }
   // the deck's box macros
   const names = ((S.info && S.info.commands) || []).filter((c) => c.box).map((c) => c.name);
@@ -764,7 +796,17 @@ function placeBox(el, b) {
 function drawFigs(f) {
   S.figHover = f;
   figEl.hidden = !f;
-  if (f) { placeBox(figEl, f.box); figEl.classList.toggle('boxmode', f.kind !== 'figure'); }
+  if (f) {
+    placeBox(figEl, f.box);
+    figEl.classList.toggle('boxmode', f.kind !== 'figure' && !f.noResize);
+    figEl.classList.toggle('movemode', !!f.noResize);
+    figEl.classList.toggle('selected', f === S.sel);
+    handleEl.hidden = !!f.noResize;
+    if (typeof moveEl !== 'undefined') {
+      moveEl.hidden = !f.move;
+      moveEl.classList.toggle('vertical', !!f.move && f.move.kind === 'vspace');
+    }
+  }
 }
 
 let figDrag = null;
@@ -879,6 +921,367 @@ function resizeMacroBox(f, ratio) {
   }
   status(`\\${f.name} width ×${ratio.toFixed(2)} (line ${f.line})`);
 }
+
+
+/* ------------------------------------------------------ repositioning */
+/* Level 1: move what the source already positions, in its own units.
+ *   - TikZ nodes placed `at (x,y)` and textpos blocks: drag anywhere; the
+ *     coordinates are rewritten (units from the one-slide build's probes).
+ *   - Other figures and boxes: drag up or down; a \vspace before them is
+ *     added or changed (and corrected once, so the slide moves as dragged).
+ *   - Column dividers: drag to rebalance the two \column widths.
+ *   - Arrow keys move the selected item (click selects; Shift: 5 mm, Alt: 0.25 mm). */
+const PT = { pt: 1, bp: 72.27 / 72, mm: 72.27 / 25.4, cm: 72.27 / 2.54, in: 72.27, pc: 12, dd: 1238 / 1157, cc: 12 * 1238 / 1157 };
+const BP2PT = 72.27 / 72;
+function fmtNum(v, dec) { const s = v.toFixed(dec).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, ''); return s === '-0' ? '0' : s; }
+function decimalsOf(str) { const m = /\.(\d+)/.exec(str); return m ? m[1].length : 0; }
+function unitDec(unit) { return unit == null ? 3 : unit === '' ? 2 : /^(cm|in)$/.test(unit) ? 2 : 1; }   // about 0.3 mm or better
+function probes() { return (S.preview && S.preview.probes) || { units: {}, lw: {}, tp: {} }; }
+
+/* the span of a balanced (...) starting at text[i] === '(' */
+function parenEnd(text, i) {
+  let d = 0;
+  for (let k = i; k < text.length; k++) {
+    const c = text[k];
+    if (c === '(' || c === '[' || c === '{') d++;
+    else if ((c === ')' || c === ']' || c === '}') && --d === 0) return k;
+  }
+  return -1;
+}
+
+/* A node's `at (...)` on its line, and where its content ends. */
+function nodeAt(line) {
+  const doc = view.state.doc, L = doc.line(line), text = doc.toString();
+  const m = /\\node\b[^;]*?\bat\s*\(/.exec(L.text);
+  if (!m) return null;
+  const open = L.from + m.index + m[0].length - 1;
+  const close = parenEnd(text, open);
+  if (close < 0) return null;
+  let k = close + 1;
+  while (/\s/.test(text[k] || '')) k++;
+  const cEnd = text[k] === '{' ? matchClose(text, k) : -1;
+  return { from: open + 1, to: close, inner: text.slice(open + 1, close), endLine: cEnd > 0 ? doc.lineAt(cEnd).number : line };
+}
+
+async function findMovables() {
+  if (!S.frame) return;
+  const doc = view.state.doc;
+  const last = Math.min(S.frame.end, doc.lines);
+  const containers = [];
+  let tikz = 0;
+  for (let l = S.frame.start; l <= last; l++) {
+    const t = doc.line(l).text.replace(/(^|[^\\])%.*$/, '$1');
+    if (/\\begin\{tikzpicture\}/.test(t)) tikz++;
+    if (tikz && /\\node\b[^;]*?\bat\s*\(/.test(t)) { const n = nodeAt(l); if (n) containers.push({ kind: 'node', line: l, end: n.endLine }); }
+    if (/\\end\{tikzpicture\}/.test(t)) tikz = Math.max(0, tikz - 1);
+    const tb = /\\begin\{textblock(\*?)\}/.exec(t);
+    if (tb) {
+      let end = l;
+      for (let k = l; k <= last; k++) if (/\\end\{textblock\*?\}/.test(doc.line(k).text)) { end = k; break; }
+      containers.push({ kind: 'textblock', line: l, end });
+    }
+  }
+  for (const f of S.figs) {
+    const c = containers.find((c) => f.line >= c.line && f.line <= c.end);
+    f.move = c ? { kind: c.kind, line: c.line } : { kind: 'vspace', line: f.line };
+  }
+  for (const c of containers) {
+    if (S.figs.some((f) => f.move.kind === c.kind && f.move.line === c.line)) {
+      // the container's box is what it holds
+      const inner = S.figs.filter((f) => f.move.line === c.line);
+      const u = unionOf(inner.map((f) => f.box));
+      if (inner.length > 1 && u) S.figs.push({ kind: c.kind, line: c.line, box: u, noResize: true, move: { kind: c.kind, line: c.line } });
+      continue;
+    }
+    const u = await contentBox(c.line, c.end);
+    if (u && u.w > 2 && u.h > 2) S.figs.push({ kind: c.kind, line: c.line, box: u, noResize: true, move: { kind: c.kind, line: c.line } });
+  }
+  await findColumns();
+  if (S.sel) S.sel = S.figs.find((f) => f.kind === S.sel.kind && f.line === S.sel.line) || null;
+  drawFigs(S.figHover && S.figs.includes(S.figHover) ? S.figHover : S.sel);
+}
+
+/* ---- columns */
+const COL_RE = /\\(?:column|begin\{column\})\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}/;
+async function findColumns() {
+  S.cols = [];
+  const doc = view.state.doc;
+  const last = Math.min(S.frame.end, doc.lines);
+  const stack = [];
+  for (let l = S.frame.start; l <= last; l++) {
+    const t = doc.line(l).text.replace(/(^|[^\\])%.*$/, '$1');
+    if (/\\begin\{columns\}/.test(t)) stack.push({ cols: [] });
+    const cm = COL_RE.exec(t);
+    if (cm && stack.length && /^\s*\\(?:column\b|begin\{column\})/.test(t)) stack[stack.length - 1].cols.push({ line: l, val: cm[1] });
+    if (/\\end\{columns\}/.test(t) && stack.length) {
+      const blk = stack.pop();
+      const lw = probes().lw[blk.cols.length ? blk.cols[0].line : -1];
+      // a \column line carries the box of the column it closes: column k runs
+      // from the line after its \column to the next \column (or \end{columns})
+      for (let k = 0; k < blk.cols.length; k++) blk.cols[k].end = k + 1 < blk.cols.length ? blk.cols[k + 1].line : l;
+      const boxes = [];
+      // records wider than the column (the whole columns row) are not its content
+      for (const c of blk.cols) { const w = lw && widthPt(c.val, lw); boxes.push(await contentBox(c.line + 1, c.end, w ? w / BP2PT + 3 : Infinity)); }
+      for (let k = 0; k + 1 < blk.cols.length; k++) {
+        const a = boxes[k], b = boxes[k + 1];
+        if (!a || !b || !lw || b.x < a.x + a.w - 3) continue;        // columns may touch (full-width boxes)
+        S.cols.push({ x: (a.x + a.w + b.x) / 2, y0: Math.min(a.y, b.y), y1: Math.max(a.y + a.h, b.y + b.h),
+          left: blk.cols[k], right: blk.cols[k + 1], lw });
+      }
+    }
+  }
+}
+
+function widthPt(val, lw) {
+  const rel = /^\s*([0-9]*\.?[0-9]+)?\s*\\(?:linewidth|textwidth|columnwidth|hsize)\s*$/.exec(val);
+  if (rel) return (rel[1] ? parseFloat(rel[1]) : 1) * lw;
+  const abs = /^\s*([0-9]*\.?[0-9]+)\s*(pt|bp|mm|cm|in|pc|dd|cc)\s*$/.exec(val);
+  return abs ? parseFloat(abs[1]) * PT[abs[2]] : null;
+}
+/* a width like 0.5\linewidth or 5cm, changed by d pt (relative widths: d / lw) */
+function shiftWidth(val, dPt, lw) {
+  const rel = /^\s*([0-9]*\.?[0-9]+)?\s*(\\(?:linewidth|textwidth|columnwidth|hsize))\s*$/.exec(val);
+  if (rel) {
+    const f = rel[1] ? parseFloat(rel[1]) : 1, nf = f + dPt / lw;
+    return nf < 0.03 ? null : fmtNum(nf, Math.max(2, decimalsOf(rel[1] || '')) ) + rel[2];
+  }
+  const abs = /^\s*([-+]?[0-9]*\.?[0-9]+)\s*(pt|bp|mm|cm|in|pc|dd|cc)\s*$/.exec(val);
+  if (abs) {
+    const nv = parseFloat(abs[1]) + dPt / PT[abs[2]];
+    return nv * PT[abs[2]] < 10 ? null : fmtNum(nv, Math.max(1, decimalsOf(abs[1]))) + abs[2];
+  }
+  return null;
+}
+
+function moveColumns(col, dxBp) {
+  const d = dxBp * BP2PT;
+  const lv = shiftWidth(col.left.val, d, col.lw), rv = shiftWidth(col.right.val, -d, col.lw);
+  if (!lv || !rv) { status('These column widths cannot be changed by dragging (edit them in the code).', 'bad'); return; }
+  const doc = view.state.doc, changes = [];
+  for (const [c, v] of [[col.left, lv], [col.right, rv]]) {
+    const L = doc.line(c.line), m = COL_RE.exec(L.text);
+    const at = L.from + m.index + m[0].lastIndexOf('{') + 1;
+    changes.push({ from: at, to: at + m[1].length, insert: v });
+  }
+  view.dispatch({ changes });
+  status(`Columns: ${lv} | ${rv}`);
+}
+
+/* ---- nodes and textpos blocks */
+function moveNode(line, dxBp, dyBp) {
+  const n = nodeAt(line);
+  if (!n) return false;
+  const Dx = dxBp * BP2PT, Dy = -dyBp * BP2PT;                 // TikZ y points up
+  const num = /^(\s*)([-+]?[0-9]*\.?[0-9]+)\s*(pt|bp|mm|cm|in|pc|dd|cc)?(\s*,\s*)([-+]?[0-9]*\.?[0-9]+)\s*(pt|bp|mm|cm|in|pc|dd|cc)?(\s*)$/.exec(n.inner);
+  let inner = null;
+  if (num) {
+    const [ax, ay, bx, by] = probes().units[line] || [PT.cm, 0, 0, PT.cm];     // TikZ default: 1 cm
+    const det = ax * by - bx * ay;
+    let u = det ? (Dx * by - bx * Dy) / det : 0, v = det ? (ax * Dy - ay * Dx) / det : 0;
+    const x = parseFloat(num[2]), y = parseFloat(num[5]);
+    const nx = num[3] ? x + Dx / PT[num[3]] : x + u;
+    const ny = num[6] ? y + Dy / PT[num[6]] : y + v;
+    const dec = (s, unit) => Math.max(unitDec(unit || null), decimalsOf(s));
+    inner = `${num[1]}${fmtNum(nx, dec(num[2], num[3]))}${num[3] || ''}${num[4]}${fmtNum(ny, dec(num[5], num[6]))}${num[6] || ''}${num[7]}`;
+  } else if (!/[$:]/.test(n.inner)) {
+    // a named coordinate or anchor, maybe with [xshift=..,yshift=..]
+    const m = /^\s*(?:\[([^\]]*)\])?\s*(.+?)\s*$/.exec(n.inner);
+    const opts = m[1] ? splitOpts(m[1]).map((o) => o.trim()).filter(Boolean) : [];
+    const bump = (key, dPt) => {
+      const i = opts.findIndex((o) => new RegExp('^' + key + '\\s*=').test(o));
+      let mm = dPt / PT.mm;
+      if (i >= 0) {
+        const v = /=\s*([-+]?[0-9]*\.?[0-9]+)\s*(pt|bp|mm|cm|in)\s*$/.exec(opts[i]);
+        if (!v) return false;
+        const nv = parseFloat(v[1]) + dPt / PT[v[2]];
+        opts[i] = `${key}=${fmtNum(nv, Math.max(unitDec(v[2]), decimalsOf(v[1])))}${v[2]}`;
+      } else if (Math.abs(mm) >= 0.05) opts.push(`${key}=${fmtNum(mm, 1)}mm`);
+      return true;
+    };
+    if (!bump('xshift', Dx) || !bump('yshift', Dy)) return false;
+    inner = (opts.length ? `[${opts.join(',')}]` : '') + m[2];
+  }
+  if (inner == null) return false;
+  view.dispatch({ changes: { from: n.from, to: n.to, insert: inner } });
+  return true;
+}
+
+function moveTextblock(line, dxBp, dyBp) {
+  const L = view.state.doc.line(line);
+  const m = /\\begin\{textblock(\*?)\}\s*\{[^}]*\}\s*\(([^)]*)\)/.exec(L.text);
+  if (!m) return false;
+  const parts = m[2].split(',');
+  if (parts.length !== 2) return false;
+  const Dx = dxBp * BP2PT, Dy = dyBp * BP2PT;                   // textpos y points down
+  const [h, v] = probes().tp[line] || [PT.cm, PT.cm];
+  const one = (str, dPt, mod) => {
+    const u = /^(\s*)([-+]?[0-9]*\.?[0-9]+)\s*(pt|bp|mm|cm|in|pc|dd|cc)?(\s*)$/.exec(str);
+    if (!u) return null;
+    const unit = u[3] || (m[1] ? null : '');
+    if (unit === null) return null;
+    const nv = parseFloat(u[2]) + (unit ? dPt / PT[unit] : dPt / mod);
+    return `${u[1]}${fmtNum(nv, Math.max(unitDec(unit), decimalsOf(u[2])))}${unit}${u[4]}`;
+  };
+  const nx = one(parts[0], Dx, h), ny = one(parts[1], Dy, v);
+  if (nx == null || ny == null) return false;
+  const at = L.from + m.index + m[0].lastIndexOf('(') + 1;
+  view.dispatch({ changes: { from: at, to: at + m[2].length, insert: `${nx},${ny}` } });
+  return true;
+}
+
+/* ---- vertical nudges through \vspace */
+const OVERLAY_ONLY = /^\s*\\(?:visible|uncover|only|onslide|invisible)\s*(?:<[^>]*>)?\s*$/;
+function blockStart(line) {                       // \visible<2-> on the line above takes the block as its argument
+  const doc = view.state.doc;
+  let l = line;
+  while (l > S.frame.start + 1 && OVERLAY_ONLY.test(doc.line(l - 1).text)) l--;
+  return l;
+}
+// \par first: at the start of a column TeX is in horizontal mode, where a bare
+// \vspace would wait for the end of the line (below the block)
+const VSPACE_RE = /^(\s*(?:\\par\s*)?)\\vspace(\*?)\{\s*([-+]?[0-9]*\.?[0-9]+)\s*(pt|bp|mm|cm|in)\s*\}\s*$/;
+/* The last line of a block that moves with it: a figure's caption, a box's
+ * \end{tcolorbox}, a macro's closing brace. */
+function blockEnd(f) {
+  if (f.kind === 'figure') { const c = captionOf(f); return c && c.line > f.line ? c.line : f.line; }
+  if (f.kind === 'tcolorbox' && f.end) return f.end;
+  if (f.kind === 'macrobox' && f.close != null) return view.state.doc.lineAt(f.close).number;
+  return f.line;
+}
+/* Change the \vspace on line `at` by dPt, or insert one there (before:
+ * above line `at`, else below it). Returns lines added (+1), removed (-1). */
+function bumpVspace(at, dPt, before, indent) {
+  const doc = view.state.doc;
+  const L = doc.line(at);
+  const m = VSPACE_RE.exec(L.text);
+  if (m) {
+    const nv = parseFloat(m[3]) + dPt / PT[m[4]];
+    if (Math.abs(nv * PT[m[4]]) < 0.15) { view.dispatch({ changes: { from: L.from, to: Math.min(L.to + 1, doc.length), insert: '' } }); return -1; }
+    view.dispatch({ changes: { from: L.from, to: L.to, insert: `${m[1]}\\vspace${m[2]}{${fmtNum(nv, Math.max(1, decimalsOf(m[3])))}${m[4]}}` } });
+    return 0;
+  }
+  const v = `${indent}\\par\\vspace{${fmtNum(dPt / PT.mm, 1)}mm}`;
+  view.dispatch({ changes: before ? { from: L.from, insert: v + '\n' } : { from: L.to, insert: '\n' + v } });
+  return 1;
+}
+/* Move a block down by dyBp: space above it, the same space taken away below
+ * it, so its column keeps its height and nothing else re-centres. Returns
+ * the block's new first line. */
+function nudgeVspace(f, dyBp) {
+  const doc = view.state.doc;
+  const dPt = dyBp * BP2PT;
+  const start = blockStart(f.move.line);
+  let end = blockEnd(f);
+  const indent = /^\s*/.exec(doc.line(start).text)[0];
+  // below first (so the lines above keep their numbers)
+  const after = end + 1 <= Math.min(S.frame.end - 1, doc.lines) && VSPACE_RE.test(doc.line(end + 1).text) ? end + 1 : null;
+  if (after) bumpVspace(after, -dPt, false, indent); else bumpVspace(end, -dPt, false, indent);
+  let p = start - 1;
+  while (p > S.frame.start && !doc.line(p).text.trim()) p--;
+  const above = p > S.frame.start && VSPACE_RE.test(view.state.doc.line(p).text) ? p : null;
+  const added = above ? bumpVspace(above, dPt, true, indent) : bumpVspace(start, dPt, true, indent);
+  return f.line + added;
+}
+
+async function waitPreview(ms = 8000) {
+  const t0 = Date.now();
+  await new Promise((r) => setTimeout(r, 120));
+  while (Date.now() - t0 < ms && (S.compiling || S.stale)) await new Promise((r) => setTimeout(r, 80));
+  if (S.figsReady) await S.figsReady;
+}
+
+/* Move a figure or box (f) by (dx, dy) bp on the slide. */
+async function moveItem(f, dxBp, dyBp, correct = true) {
+  const mv = f.move;
+  if (!mv) return;
+  if (mv.kind === 'node') {
+    if (!moveNode(mv.line, dxBp, dyBp)) { status('This node is placed with an expression; move it in the code.', 'bad'); return; }
+    status(`Moved the node on line ${mv.line}`);
+  } else if (mv.kind === 'textblock') {
+    if (!moveTextblock(mv.line, dxBp, dyBp)) { status('This textpos block could not be moved (edit its position in the code).', 'bad'); return; }
+    status(`Moved the block on line ${mv.line}`);
+  } else {
+    if (Math.abs(dyBp) < 0.3) return;
+    const y0 = f.box.y, kind = f.kind;
+    const line = nudgeVspace(f, dyBp);
+    if (S.sel === f) S.sel = { kind, line };
+    status(`Space above line ${line}: ${dyBp > 0 ? '+' : ''}${fmtNum(dyBp / 72 * 25.4, 1)} mm`);
+    if (!correct || !S.live) return;
+    // a centred frame or column moves the block by a fraction of the space: correct once
+    await waitPreview();
+    const g = S.figs.find((x) => x.kind === kind && x.line === line);
+    if (!g) return;
+    const got = g.box.y - y0;
+    if (got * dyBp > 0 && Math.abs(got - dyBp) > 1 && Math.abs(got) > 0.5) nudgeVspace(g, dyBp * (dyBp / got - 1));
+  }
+}
+
+/* ---- the move grip, the column handle and the keys */
+const moveEl = document.createElement('div'); moveEl.className = 'fig-move'; moveEl.title = 'Drag to move';
+figEl.appendChild(moveEl);
+const colEl = document.createElement('div'); colEl.className = 'col-handle'; colEl.hidden = true; colEl.title = 'Drag to change the column widths';
+const colLbl = document.createElement('div'); colLbl.className = 'fig-ratio col-label'; colEl.appendChild(colLbl);
+$('pagewrap').appendChild(colEl);
+S.cols = [];
+
+let moveDrag = null, colDrag = null;
+moveEl.addEventListener('mousedown', (e) => {
+  if (!S.figHover || !S.figHover.move) return;
+  e.preventDefault(); e.stopPropagation();
+  S.sel = S.figHover;
+  moveDrag = { f: S.figHover, x0: e.clientX, y0: e.clientY, dx: 0, dy: 0 };
+  ghostEl.hidden = false;
+  placeBox(ghostEl, moveDrag.f.box);
+  ratioEl.textContent = '';
+});
+colEl.addEventListener('mousedown', (e) => {
+  if (!S.colHover) return;
+  e.preventDefault(); e.stopPropagation();
+  colDrag = { c: S.colHover, x0: e.clientX, dx: 0 };
+});
+addEventListener('mousemove', (e) => {
+  if (moveDrag) {
+    const free = moveDrag.f.move.kind !== 'vspace';
+    moveDrag.dx = free ? (e.clientX - moveDrag.x0) / pv.scale : 0;
+    moveDrag.dy = (e.clientY - moveDrag.y0) / pv.scale;
+    const b = moveDrag.f.box;
+    placeBox(ghostEl, { x: b.x + moveDrag.dx, y: b.y + moveDrag.dy, w: b.w, h: b.h });
+    const mm = (v) => fmtNum(v / 72 * 25.4, 1);
+    ratioEl.textContent = free ? `→ ${mm(moveDrag.dx)} ↓ ${mm(moveDrag.dy)} mm` : `↓ ${mm(moveDrag.dy)} mm`;
+  } else if (colDrag) {
+    colDrag.dx = (e.clientX - colDrag.x0) / pv.scale;
+    const c = colDrag.c, d = colDrag.dx * BP2PT;
+    placeCol(c, colDrag.dx);
+    colLbl.textContent = `${shiftWidth(c.left.val, d, c.lw) || '?'} | ${shiftWidth(c.right.val, -d, c.lw) || '?'}`;
+  }
+});
+addEventListener('mouseup', () => {
+  if (moveDrag) {
+    const d = moveDrag; moveDrag = null;
+    ghostEl.hidden = true;
+    if (Math.hypot(d.dx, d.dy) > 0.5) moveItem(d.f, d.dx, d.dy);
+  } else if (colDrag) {
+    const d = colDrag; colDrag = null;
+    colLbl.textContent = '';
+    if (Math.abs(d.dx) > 0.5) moveColumns(d.c, d.dx); else placeCol(d.c, 0);
+  }
+});
+function placeCol(c, dx) {
+  Object.assign(colEl.style, { left: (c.x + dx) * pv.scale - 4 + 'px', top: c.y0 * pv.scale + 'px', height: (c.y1 - c.y0) * pv.scale + 'px' });
+}
+function colAt(x, y) { return S.cols.find((c) => Math.abs(x - c.x) < 6 && y >= c.y0 && y <= c.y1) || null; }
+
+// Arrow keys move the selected item (not while typing in the code or a box)
+addEventListener('keydown', (e) => {
+  if (!S.sel || !S.sel.move || !e.key.startsWith('Arrow') || e.metaKey || e.ctrlKey) return;
+  if (view.hasFocus || !popEl.hidden || (document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName))) return;
+  const step = (e.shiftKey ? 5 : e.altKey ? 0.25 : 1) / 25.4 * 72;            // mm in bp
+  const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+  const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+  if (S.sel.move.kind === 'vspace' && !dy) return;
+  e.preventDefault();
+  moveItem(S.sel, dx, dy, false);
+});
 
 /* --------------------------------------------------- click to edit text */
 const popEl = document.createElement('div'); popEl.className = 'text-pop'; popEl.hidden = true;
@@ -1089,12 +1492,31 @@ $('preview').addEventListener('dblclick', async (e) => {
   else gotoLine(h.fig ? h.fig.line : h.hit.line);
 });
 $('preview').addEventListener('mousemove', (e) => {
-  if (figDrag || !S.figs.length) return;
+  if (figDrag || moveDrag || colDrag) return;
   const r = $('pagewrap').getBoundingClientRect();
-  const f = figAt((e.clientX - r.left) / pv.scale, (e.clientY - r.top) / pv.scale);
+  const x = (e.clientX - r.left) / pv.scale, y = (e.clientY - r.top) / pv.scale;
+  S.colHover = colAt(x, y);
+  colEl.hidden = !S.colHover;
+  if (S.colHover) placeCol(S.colHover, 0);
+  if (!S.figs.length) return;
+  const f = figAt(x, y) || S.sel;
   if (f !== S.figHover) drawFigs(f);
 });
-$('preview').addEventListener('mouseleave', () => { if (!figDrag) drawFigs(null); });
+$('preview').addEventListener('mouseleave', () => {
+  if (figDrag || moveDrag || colDrag) return;
+  drawFigs(S.sel || null);
+  if (!colDrag) colEl.hidden = true;
+});
+// a click on the slide selects the figure or box under it (arrow keys move it)
+$('preview').addEventListener('mousedown', (e) => {
+  if (e.button !== 0 || e.target.closest('.fig-handle, .fig-move, .col-handle, .text-pop')) return;
+  const r = $('pagewrap').getBoundingClientRect();
+  const f = S.figs.length ? figAt((e.clientX - r.left) / pv.scale, (e.clientY - r.top) / pv.scale) : null;
+  S.sel = f && f.move ? f : null;
+  if (S.sel && view.hasFocus) view.contentDOM.blur();
+  drawFigs(f);
+});
+addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.sel && !view.hasFocus && popEl.hidden) { S.sel = null; drawFigs(null); } });
 
 /* ------------------------------------------------------- deck follows */
 function followDeck(f) {
@@ -1147,6 +1569,7 @@ function setCodeSize(px) {
   px = Math.max(10, Math.min(24, Math.round(px)));
   $('code').style.setProperty('--code-size', px + 'px');
   try { localStorage.setItem('slidex.codeSize', px); } catch { /* no storage */ }
+  if (api && api.setPref) api.setPref('slidex.codeSize', px);
   if (view) view.requestMeasure();
   status(`Code text ${px} pt`);
 }
@@ -1162,6 +1585,7 @@ window.editorCommand = (name) => {
   else if (name === 'fontBigger') setCodeSize(codeSize() + 1);
   else if (name === 'fontSmaller') setCodeSize(codeSize() - 1);
   else if (name === 'fontReset') setCodeSize(13);
+  else if (name.startsWith('theme:')) { setTheme(name.slice(6)); return; }
   view.focus();
 };
 
@@ -1170,6 +1594,11 @@ window.editorCommand = (name) => {
   if (!api) { document.body.textContent = 'The editor runs inside the SlideX app.'; return; }
   const init = await api.init();
   if (!init || init.error) { document.body.textContent = (init && init.error) || 'No deck.'; return; }
+  // settings kept by the app (this page's storage changes with the server's port)
+  for (const [k, v] of Object.entries(init.prefs || {})) { try { localStorage.setItem(k, v); } catch { /* no storage */ } }
+  applyTheme();
+  { const px = +(init.prefs || {})['slidex.codeSize']; if (px) $('code').style.setProperty('--code-size', px + 'px'); }
+  { const h = +(init.prefs || {})['slidex.outputHeight']; if (h > 28) $('output').style.height = h + 'px'; }
   S.tex = init.texName;
   S.deckUrl = init.deckUrl;
   S.pageFrames = init.pageFrames || [];

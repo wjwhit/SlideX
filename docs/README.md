@@ -11,14 +11,15 @@ is; the `slidemovie` package is only for movies. These pages walk through it wit
 |---|---|
 | [Presenting](presenting.md) | opening a deck, keys, the presenter window, laser, magnifier, slide panel, speaker notes |
 | [Movies and GIFs](movies.md) | the `slidemovie` package: putting a movie on a slide, options, posters, sending a deck |
-| [The editor](editor.md) | one-slide compiles, two-way highlighting, completion, resizing, captions, text editing, errors |
+| [The editor](editor.md) | one-slide compiles, two-way highlighting, completion, resizing and moving, captions, text editing, errors, themes |
 | [Line-by-line highlighting](frames.md) | how the editor matches source lines and slides, and which frames it can |
 
 ## Try it with the example deck
 
-The example deck is plain beamer, with five slides and a backup slide: a movie that keeps
+The example deck is plain beamer, with six slides and a backup slide: a movie that keeps
 playing through overlay steps, three movies with different options, a figure
-next to a box, a box macro with an equation, and a backup slide.
+next to a box, a slide for moving things (a figure, a box and a TikZ node), a
+box macro with an equation, and a backup slide.
 
 1. Install SlideX (see [Install](../README.md#install)), or run it from source
    (see [Building](../README.md#building)).

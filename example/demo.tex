@@ -8,6 +8,7 @@
 \setbeamertemplate{footline}[frame number]
 \usepackage{slidemovie}   % movies and GIFs that play in SlideX
 \usepackage{tcolorbox}
+\usepackage{tikz}
 
 \definecolor{ink}{RGB}{28,52,86}
 \setbeamercolor{frametitle}{fg=ink}
@@ -76,6 +77,20 @@
 			\end{itemize}
 		\end{tcolorbox}
 	\end{columns}
+\end{frame}
+
+\begin{frame}[label=place]{Placing things}
+	\begin{columns}[c]
+		\column{0.5\linewidth}\centering
+		\includegraphics[width=0.9\linewidth]{figures/growth.pdf}
+		\column{0.42\linewidth}
+		\begin{tcolorbox}[colback=ink!4,colframe=ink!60,boxrule=0.6pt,arc=1mm,width=\linewidth]
+			In SlideX, drag the figure or this box up or down, or the gap between the columns
+		\end{tcolorbox}
+	\end{columns}
+	\begin{tikzpicture}[remember picture, overlay]
+		\node[fill=ink, text=white, rounded corners=2pt, inner sep=5pt] at ([xshift=-32mm,yshift=-19mm]current page.north east) {A TikZ node: drag it anywhere};
+	\end{tikzpicture}
 \end{frame}
 
 \begin{frame}[label=keybox]{A box macro, and an equation}
