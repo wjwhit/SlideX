@@ -202,6 +202,47 @@ const SLOTS = [
 ];
 const FIELDS = ['title', 'subtitle', 'author', 'institute', 'date'];
 
+/* ---- page size: beamer's aspectratio, unless something sets the paper itself
+ * (a style's \geometry{paperwidth=...}, often fed by its own options) */
+const RATIO_MM = { 169: [160, 90], 1610: [160, 100], 149: [140, 90], 43: [128, 96], 54: [125, 100], 32: [135, 90] };
+const LEN_PT = { pt: 1, bp: 72.27 / 72, mm: 72.27 / 25.4, cm: 72.27 / 2.54, in: 72.27 };
+const lenPt = (v) => { const m = /^\s*([0-9]*\.?[0-9]+)\s*(pt|bp|mm|cm|in)\s*$/.exec(v || ''); return m ? { n: parseFloat(m[1]), unit: m[2], pt: parseFloat(m[1]) * LEN_PT[m[2]] } : null; };
+function geometryKeys(body) {
+  const out = {};
+  for (const kv of body.split(',')) { const m = /^\s*(paperwidth|paperheight|papersize)\s*=\s*(.+?)\s*$/.exec(kv); if (m) out[m[1]] = m[2]; }
+  if (out.papersize) { const p = /^\{?\s*([^,}]+?)\s*,\s*([^,}]+?)\s*\}?$/.exec(out.papersize); if (p) { out.paperwidth = p[1]; out.paperheight = p[2]; } }
+  return out;
+}
+/* {w, h} as lengths, and where they are set: {via: {pkg, wkey, hkey}} or {main: true} */
+function paperInfo(texPath, text) {
+  let found = null;
+  for (const s of sources(texPath, text)) {
+    for (const g of findAll(s.text, 'geometry', 1)) {
+      const k = geometryKeys(g.args[0]);
+      if (!k.paperwidth || !k.paperheight) continue;
+      const rec = { file: s.file, main: !!s.main, w: k.paperwidth, h: k.paperheight };
+      const vw = /\\([A-Za-z]+)@([A-Za-z]+)/.exec(k.paperwidth), vh = /\\([A-Za-z]+)@([A-Za-z]+)/.exec(k.paperheight);
+      if (vw && vh && vw[1] === vh[1]) {
+        const po = pkgOptions(text, vw[1]);
+        const ow = po && po.opts.find((o) => o.key === vw[2]), oh = po && po.opts.find((o) => o.key === vh[2]);
+        rec.via = { pkg: vw[1], wkey: vw[2], hkey: vh[2] };
+        if (ow) rec.w = unbrace(ow.raw);
+        if (oh) rec.h = unbrace(oh.raw);
+        if (!ow || !oh) rec.defaults = true;        // the style's own defaults: shown, set as options when changed
+      }
+      found = rec;                                  // the last one wins
+    }
+  }
+  return found;
+}
+function ratioOf(w, h) {
+  const W = lenPt(w), H = lenPt(h);
+  if (!W || !H) return null;
+  const r = W.pt / H.pt;
+  for (const [k, [a, b]] of Object.entries(RATIO_MM)) if (Math.abs(r - a / b) / (a / b) < 0.01) return k;
+  return 'custom';
+}
+
 /* What the panel shows. */
 function info(texPath, text) {
   const src = sources(texPath, text);
@@ -254,6 +295,8 @@ function info(texPath, text) {
   }
   const dc = findCommand(main.text, 'documentclass', 1);
   const ar = dc && dc.opt && /aspectratio\s*=\s*(\d+)/.exec(dc.opt);
+  const paper = paperInfo(texPath, text);
+  const paperRatio = paper && ratioOf(paper.w, paper.h);
   const tmpl = (name) => {
     for (const s of [...src].reverse()) {
       const c = nc(s.text);
@@ -268,7 +311,7 @@ function info(texPath, text) {
     return null;
   };
   return {
-    fields, themes, aspect: ar ? ar[1] : null, colors, slots,
+    fields, themes, aspect: paperRatio || (ar ? ar[1] : null), paper, colors, slots,
     templates: { footline: tmpl('footline'), headline: tmpl('headline'), nav: tmpl('navigation symbols') },
     installed: installedThemes(path.dirname(texPath)),
   };
@@ -328,9 +371,43 @@ function setTheme(text, kind, name, after) {
 function setAspect(text, ratio) {
   const dc = findCommand(text, 'documentclass', 1);
   if (!dc) return text;
-  let opts = (dc.opt || '').split(',').map((s) => s.trim()).filter((s) => s && !/^aspectratio\s*=/.test(s));
-  if (ratio && ratio !== '43') opts.push(`aspectratio=${ratio}`);
-  return text.slice(0, dc.from) + `\\documentclass${opts.length ? `[${opts.join(',')}]` : ''}{${dc.args[0]}}` + text.slice(dc.to);
+  const opt = dc.opt || '';
+  const m = /(^|,)(\s*aspectratio\s*=\s*)(\d+)/.exec(opt);
+  const keep = ratio && ratio !== '43';
+  let next;
+  if (m) {                                                   // change the value where it is
+    if (m[3] === ratio) return text;
+    next = keep ? opt.slice(0, m.index) + m[1] + m[2] + ratio + opt.slice(m.index + m[0].length)
+      : (opt.slice(0, m.index) + opt.slice(m.index + m[0].length)).replace(/^\s*,\s*|\s*,\s*$/g, '');
+  } else {
+    if (!keep) return text;
+    next = opt.trim() ? `${opt}, aspectratio=${ratio}` : `aspectratio=${ratio}`;
+  }
+  return text.slice(0, dc.from) + `\\documentclass${next.trim() ? `[${next}]` : ''}{${dc.args[0]}}` + text.slice(dc.to);
+}
+
+/* The paper size for a ratio, where the deck sets it (style options or a
+ * \geometry in this file): beamer's size for that ratio, scaled like the
+ * current paper (a 222 x 125 mm deck stays about that size). */
+function setPaper(texPath, text, ratio) {
+  const p = paperInfo(texPath, text);
+  if (!p || !(p.via || p.main)) return text;
+  const W = lenPt(p.w), H = lenPt(p.h);
+  if (!W || !H) return text;
+  const cur = ratioOf(p.w, p.h);
+  const base = RATIO_MM[cur] || [W.pt / LEN_PT.mm, H.pt / LEN_PT.mm];
+  const scale = Math.sqrt((W.pt / LEN_PT.mm) * (H.pt / LEN_PT.mm) / (base[0] * base[1]));
+  const [a, b] = RATIO_MM[ratio] || RATIO_MM[43];
+  const unit = W.unit;
+  const fmt = (mm) => { const v = mm * LEN_PT.mm / LEN_PT[unit]; return (Math.round(v * 10) / 10).toString() + unit; };
+  const nw = fmt(a * scale), nh = fmt(b * scale);
+  if (p.via) return setPkgOption(setPkgOption(text, p.via.pkg, p.via.wkey, nw), p.via.pkg, p.via.hkey, nh);
+  // \geometry{...} in this file
+  const g = findAll(text, 'geometry', 1).filter((x) => { const k = geometryKeys(x.args[0]); return k.paperwidth && k.paperheight; }).pop();
+  if (!g) return text;
+  const body = g.args[0].split(',').map((kv) => kv.replace(/^(\s*paperwidth\s*=\s*).+?(\s*)$/, `$1${nw}$2`).replace(/^(\s*paperheight\s*=\s*).+?(\s*)$/, `$1${nh}$2`)
+    .replace(/^(\s*papersize\s*=\s*).+$/, `$1{${nw},${nh}}`)).join(',');
+  return text.slice(0, g.from) + `\\geometry{${body}}` + text.slice(g.to);
 }
 
 /* A named colour: change its \definecolor in the main file, or add one
@@ -415,7 +492,7 @@ function apply(texPath, text, e) {
       return setField(text, e.field, e.long, e.short);
     }
     case 'theme': return e.via ? setPkgOption(text, e.via.pkg, e.via.key, e.name) : setTheme(text, e.which, e.name, e.after);
-    case 'aspect': return setAspect(text, e.ratio);
+    case 'aspect': return setPaper(texPath, setAspect(text, e.ratio), e.ratio);
     case 'color': return setColor(text, e.name, e.hex);
     case 'slot': return setSlot(text, e.slot, e.key, e.hex);
     case 'footline': return setTemplate(text, 'footline', e.preset === 'default' ? '' : FOOTLINES[e.preset]);
