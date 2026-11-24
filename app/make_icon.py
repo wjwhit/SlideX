@@ -1,4 +1,4 @@
-"""Build the SlideX app icon (icon.icns, icon.png): the S^x mark from the
+"""Build the SlideX app icon (icon.icns, icon.png): the S^X mark from the
 wordmark (tools/logo/iconmark.tex, typeset in Computer Modern) on a navy tile."""
 import os
 import shutil
@@ -56,7 +56,11 @@ def main(out):
             px = size * scale
             big.resize((px, px), Image.LANCZOS).save(
                 os.path.join(iconset, f"icon_{size}x{size}{'@2x' if scale == 2 else ''}.png"))
-    subprocess.run(['iconutil', '-c', 'icns', iconset, '-o', out], check=True)
+    try:
+        subprocess.run(['iconutil', '-c', 'icns', iconset, '-o', out], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except (OSError, subprocess.CalledProcessError):
+        big.save(out, format='ICNS')
     big.save(os.path.join(HERE, 'icon.png'))
     shutil.rmtree(tmp)
     print('wrote', out)
