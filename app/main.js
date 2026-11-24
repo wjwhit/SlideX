@@ -180,6 +180,64 @@ function deckRoot(pdfPath) {
   return { root, movies, missing };
 }
 
+/* ------------------------------------------------------------ deck check */
+/* Before a talk: every movie the PDF links to is there, readable, inside the
+ * folder SlideX serves, and in a format Chromium plays (checked with ffprobe
+ * when it is installed, else by extension). Returns {problems, notes}. */
+const PLAYABLE_VIDEO = new Set(['h264', 'hevc', 'vp8', 'vp9', 'av1']);
+const PLAYABLE_FORMAT = /(mp4|mov|m4v|webm|matroska|gif)/;
+function ffprobe(file) {
+  const env = { ...process.env, PATH: ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH || ''].join(':') };
+  try {
+    const out = require('child_process').execFileSync('ffprobe', ['-v', 'error', '-show_entries',
+      'stream=codec_type,codec_name,width,height:format=format_name,duration', '-of', 'json', file], { env, timeout: 15000, encoding: 'utf8' });
+    return JSON.parse(out);
+  } catch (err) { return err.code === 'ENOENT' ? null : { error: String(err.stderr || err.message).trim().split('\n')[0] }; }
+}
+function checkDeck(pdfPath) {
+  const problems = [], notes = [];
+  if (!fs.existsSync(pdfPath)) return { problems: [`The PDF is missing: ${pdfPath}`], notes };
+  const { root, movies } = deckRoot(pdfPath);
+  const dir = path.dirname(pdfPath);
+  let probed = 0, noProbe = false;
+  for (const mv of [...new Set(movies)]) {
+    if (/^[a-z]+:/i.test(mv)) { notes.push(`${mv}: a web address, needs a network connection`); continue; }
+    const f = path.resolve(dir, mv);
+    if (!fs.existsSync(f)) { problems.push(`${mv}: missing`); continue; }
+    try { fs.accessSync(f, fs.constants.R_OK); } catch { problems.push(`${mv}: not readable`); continue; }
+    if (!fs.statSync(f).size) { problems.push(`${mv}: empty file`); continue; }
+    if (!inside(root, f)) problems.push(`${mv}: outside the folder SlideX serves (${root}); move it next to the PDF`);
+    if (/\.gif$/i.test(mv)) { probed++; continue; }
+    const p = noProbe ? null : ffprobe(f);
+    if (p === null) { noProbe = true; if (!/\.(mp4|m4v|mov|webm)$/i.test(mv)) problems.push(`${mv}: not a movie format SlideX plays (mp4, mov, webm, gif)`); continue; }
+    if (p.error) { problems.push(`${mv}: cannot be read as a movie (${p.error})`); continue; }
+    probed++;
+    const v = (p.streams || []).find((x) => x.codec_type === 'video');
+    const fmt = (p.format && p.format.format_name) || '';
+    if (!v) problems.push(`${mv}: no video in it`);
+    else if (!PLAYABLE_VIDEO.has(v.codec_name) || !PLAYABLE_FORMAT.test(fmt)) problems.push(`${mv}: ${v.codec_name} in ${fmt.split(',')[0]} will not play; re-encode with slidemovie.py encode (H.264 mp4)`);
+  }
+  notes.unshift(movies.length ? `${new Set(movies).size} movie(s) linked${noProbe ? ' (ffprobe not found: formats checked by file name only)' : `, ${probed} checked`}` : 'No movies in this deck');
+  const tex = editor.findSource(pdfPath);
+  if (tex) {
+    try {
+      const text = fs.readFileSync(tex, 'utf8');
+      const n = editor.parseFrames(text).filter((f) => { const x = notesLib.findNote(text, f); return x && x.text.trim(); }).length;
+      notes.push(`Speaker notes: in ${path.basename(tex)} (${n} frame${n === 1 ? '' : 's'} with a note)`);
+    } catch { /* unreadable source */ }
+  } else if (fs.existsSync(pdfPath + '.notes.json')) notes.push(`Speaker notes: in ${path.basename(pdfPath)}.notes.json`);
+  return { problems, notes };
+}
+async function checkDeckDialog(w) {
+  const pdfPath = w && (deckOf.get(w.webContents.id) || (editors.get(w.webContents.id) || {}).pdfPath);
+  if (!pdfPath) { dialog.showMessageBox(w, { message: 'Open a deck first, then choose Check Deck.' }); return; }
+  const r = checkDeck(pdfPath);
+  log.info(`check deck ${pdfPath}: ${r.problems.length} problem(s)`);
+  await dialog.showMessageBox(w, { type: r.problems.length ? 'warning' : 'info',
+    message: r.problems.length ? `${path.basename(pdfPath)}: ${r.problems.length} problem${r.problems.length === 1 ? '' : 's'}` : `${path.basename(pdfPath)} is ready to present`,
+    detail: [...r.problems.map((p) => '• ' + p), ...(r.problems.length ? [''] : []), ...r.notes].join('\n') });
+}
+
 /* ---------------------------------------------------------------- windows */
 const deckOf = new Map();   // webContents id -> pdf path
 
@@ -193,6 +251,7 @@ function openDeck(pdfPath, opts = {}) {
   const rel = path.relative(root, pdfPath).split(path.sep).map(encodeURIComponent).join('/');
   const url = `http://127.0.0.1:${port}/viewer/index.html?pdf=/deck/${idx}/${rel}`;
   app.addRecentDocument(pdfPath);
+  addRecent(pdfPath);
   console.log(`slidex: ${pdfPath}: ${movies.length} movie(s)` + (missing.length ? `, MISSING: ${missing.join(', ')}` : ''));
 
   let win = opts.reuse;
@@ -301,7 +360,7 @@ async function chooseDeck(win) {
 
 function showWelcome(opts = {}) {
   const win = new BrowserWindow({
-    width: 720, height: 460, backgroundColor: '#111111', title: 'SlideX', show: !opts.hidden,
+    width: 940, height: 600, minWidth: 700, minHeight: 480, backgroundColor: '#121315', title: 'SlideX', show: !opts.hidden,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
   setupWindow(win);
@@ -326,7 +385,9 @@ async function openSource(win) {
   const r = await dialog.showOpenDialog(win || undefined, { title: 'Open a beamer source file',
     properties: ['openFile'], filters: [{ name: 'LaTeX', extensions: ['tex'] }] });
   if (r.canceled || !r.filePaths.length) return;
-  const tex = r.filePaths[0];
+  return openSourcePath(r.filePaths[0], win);
+}
+async function openSourcePath(tex, win) {
   const pdf = tex.replace(/\.tex$/i, '.pdf');
   const stale = !fs.existsSync(pdf) || fs.statSync(pdf).mtimeMs < fs.statSync(tex).mtimeMs;
   if (stale) {
@@ -334,12 +395,16 @@ async function openSource(win) {
     busy.loadURL('data:text/html,' + encodeURIComponent('<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:%231b1d21;color:%23ddd;font:14px -apple-system,sans-serif">Building ' + path.basename(tex) + '…</body>'));
     const c = await editor.compileDeck(tex);
     busy.destroy();
+    log.info(`built ${path.basename(tex)} to open it: ${c.ok ? 'ok' : `${(c.errors || []).length} error(s)`} in ${((c.ms || 0) / 1000).toFixed(1)} s`);
     if (!fs.existsSync(pdf)) {
-      dialog.showErrorBox('SlideX', 'The deck did not build:\n' + (c.errors.slice(0, 5).map((e) => (e.line ? 'line ' + e.line + ': ' : '') + e.message).join('\n') || 'see the .log file'));
+      const noTex = /ENOENT|not found|command not found/i.test(String(c.log || '')) || (c.errors || []).some((e) => /ENOENT/.test(e.message));
+      dialog.showErrorBox('SlideX', 'The deck did not build:\n' + (noTex ? 'pdflatex was not found. Install a TeX distribution (MacTeX: tug.org/mactex) and try again.'
+        : (c.errors.slice(0, 5).map((e) => (e.line ? 'line ' + e.line + ': ' : '') + e.message).join('\n') || 'see the .log file')));
       return;
     }
   }
-  const deckWin = openDeck(pdf);
+  const welcome = win && !win.isDestroyed() && win.webContents.getURL().includes('/viewer/welcome.html') ? win : null;
+  const deckWin = openDeck(pdf, { reuse: welcome });
   if (deckWin) deckWin.webContents.once('did-finish-load', () => setTimeout(() => openEditor(deckWin), 800));
 }
 
@@ -354,6 +419,7 @@ async function openEditor(deckWin) {
     texPath = r.filePaths[0];
   }
   log.info('open editor', texPath);
+  addRecent(pdfPath, texPath);
   for (const [id, st] of editors) {
     if (st.texPath === texPath && !st.win.isDestroyed()) {   // back to edit mode
       st.deckWin = deckWin;
@@ -374,7 +440,20 @@ async function openEditor(deckWin) {
     deckUrl: urlFor(root, pdfPath), frames: [], sync: null, syncFrame: null, deckWin };
   editors.set(win.webContents.id, st);
   st.id = win.webContents.id;
+  // A page with unsaved edits refuses to unload, and Electron then cancels the
+  // close without a word: ask instead.
+  win.webContents.on('will-prevent-unload', (ev) => {
+    const test = process.env.SLIDEX_SELFTEST_CLOSEANSWER;   // self-test: 0 save, 1 don't save, 2 cancel
+    if (!test && (process.argv.includes('--selftest') || process.argv.includes('--shots'))) { ev.preventDefault(); return; }
+    const r = test ? +test : dialog.showMessageBoxSync(win, { type: 'question', buttons: ['Save', 'Don\u2019t Save', 'Cancel'], defaultId: 0, cancelId: 2,
+      message: `Save your changes to ${path.basename(texPath)}?`, detail: 'Your edits in the editor have not been saved to the file.' });
+    if (r === 1) { writeRecovery(texPath, null); ev.preventDefault(); }            // close without saving
+    else if (r === 0) {                                                            // save, then close
+      win.webContents.executeJavaScript('save().then((ok) => ok !== false)').then((ok) => { if (ok && !win.isDestroyed()) win.close(); }).catch((err) => log.error(err));
+    }
+  });
   win.on('closed', () => {                       // editing over: bring the deck back
+    unwatchSource(st);
     editors.delete(st.id);
     // one-slide builds are only for the open editor (unless another editor has this deck)
     if (![...editors.values()].some((o) => o.texPath === st.texPath)) editor.cleanBuildDir(st.texPath, { keepJob: null });
@@ -382,6 +461,48 @@ async function openEditor(deckWin) {
   });
   win.once('ready-to-show', () => { hideDeck(deckWin).then(() => { if (!win.isDestroyed() && win.isVisible()) win.focus(); }); });   // edit mode: only the editor
   win.loadURL(`http://127.0.0.1:${port}/viewer/editor.html`);
+}
+
+/* ---- the .tex on disk while an editor has it open */
+/* Polled once a second (fs.watch loses a file replaced by an atomic save, as
+ * editors and iCloud do). A change this editor did not make is sent to it. */
+function watchSource(st) {
+  if (st.watching) return;
+  st.watching = (cur, prev) => {
+    if (cur.mtimeMs === prev.mtimeMs && cur.size === prev.size) return;
+    let text = null;
+    try { text = fs.readFileSync(st.texPath, 'utf8'); } catch { /* removed or being replaced */ }
+    if (text == null) { if (!cur.nlink) st.win.webContents.send('slidex-ed:disk', { gone: true }); return; }
+    if (text === st.diskText) return;
+    log.info('changed on disk', st.texPath);
+    if (!st.win.isDestroyed()) st.win.webContents.send('slidex-ed:disk', { text });
+  };
+  fs.watchFile(st.texPath, { interval: 1000 }, st.watching);
+}
+function unwatchSource(st) { if (st.watching) { fs.unwatchFile(st.texPath, st.watching); st.watching = null; } }
+
+/* Unsaved edits, copied every few seconds to .slidex/recovery/<deck>.tex and
+ * offered back when the editor opens again (after a crash or a forced quit). */
+function recoveryFile(texPath) { return path.join(editor.buildDir(texPath), 'recovery', path.basename(texPath)); }
+function writeRecovery(texPath, text) {
+  const f = recoveryFile(texPath);
+  try {
+    if (text == null) { fs.rmSync(f, { force: true }); return; }
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f + '.tmp', text); fs.renameSync(f + '.tmp', f);
+  } catch (err) { log.warn('recovery copy not written:', err); }
+}
+function readRecovery(texPath) {
+  const f = recoveryFile(texPath);
+  try { return { text: fs.readFileSync(f, 'utf8'), time: fs.statSync(f).mtimeMs }; } catch { return null; }
+}
+function discardRecovery(texPath) {             // kept in backups/, not deleted
+  const f = recoveryFile(texPath);
+  if (!fs.existsSync(f)) return;
+  const dir = path.join(editor.buildDir(texPath), 'backups');
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+  try { fs.renameSync(f, path.join(dir, `${path.basename(texPath, '.tex')}-unsaved-${stamp}.tex`)); } catch (err) { log.warn(err); }
 }
 
 function edState(e) {
@@ -422,11 +543,15 @@ function mapErrors(st, errors, r = {}) {
 ipcMain.handle('slidex-ed:init', async (e) => {
   const st = edState(e);
   const text = fs.readFileSync(st.texPath, 'utf8');
+  st.diskText = text;                                      // what this editor last read or wrote
+  watchSource(st);
   st.frames = editor.parseFrames(text);
   const pf = await pageFrames(st).catch(() => []);
   let deckPage = 0;
   try { deckPage = await st.deckWin.webContents.executeJavaScript('window.slidex ? slidex.page : 0'); } catch { /* closed */ }
-  return { texName: path.basename(st.texPath), text, frames: st.frames, deckUrl: st.deckUrl, pageFrames: pf, deckPage, prefs: getPrefs() };
+  const rec = readRecovery(st.texPath);
+  return { texName: path.basename(st.texPath), text, frames: st.frames, deckUrl: st.deckUrl, pageFrames: pf, deckPage, prefs: getPrefs(),
+    recovery: rec && rec.text !== text ? rec : null };
 });
 
 ipcMain.handle('slidex-ed:compileFrame', async (e, text, line) => {
@@ -445,9 +570,9 @@ ipcMain.handle('slidex-ed:compileFrame', async (e, text, line) => {
     frames: st.frames, errors: mapErrors(st, r.errors || [], r), ms: r.ms, fmt: r.fmt, log: tailLog(r.log) };
 });
 
-ipcMain.handle('slidex-ed:compileDeck', async (e, text) => {
+ipcMain.handle('slidex-ed:compileDeck', async (e, text, force) => {
   const st = edState(e);
-  editor.saveSource(st.texPath, text);
+  if (writeSource(st, text, force).conflict) return { conflict: true, frames: st.frames || [], errors: [] };
   st.frames = editor.parseFrames(text);
   const r = await editor.compileDeck(st.texPath);
   if (r.built) reloadDeckWindows(st.pdfPath);
@@ -457,12 +582,28 @@ ipcMain.handle('slidex-ed:compileDeck', async (e, text) => {
   return { ok: r.ok, built: r.built, frames: st.frames, errors: mapErrors(st, r.errors || []), ms: r.ms, pageFrames: pf, log: tailLog(r.log) };
 });
 
-ipcMain.handle('slidex-ed:save', (e, text) => {
-  const st = edState(e);
+/* Saves refuse to overwrite a .tex that changed on disk since this editor
+ * last read or wrote it (another editor, a script, a sync), unless forced. */
+function writeSource(st, text, force) {
+  let disk = null;
+  try { disk = fs.readFileSync(st.texPath, 'utf8'); } catch { /* gone: write it */ }
+  if (!force && disk != null && st.diskText != null && disk !== st.diskText && disk !== text) return { conflict: true };
+  st.diskText = text;
   editor.saveSource(st.texPath, text);
+  writeRecovery(st.texPath, null);
+  return { ok: true };
+}
+ipcMain.handle('slidex-ed:save', (e, text, force) => {
+  const st = edState(e);
+  const w = writeSource(st, text, force);
+  if (w.conflict) { log.warn('save refused: changed on disk', st.texPath); return { conflict: true }; }
   st.frames = editor.parseFrames(text);
   return { frames: st.frames };
 });
+ipcMain.handle('slidex-ed:acceptDisk', (e, text) => { edState(e).diskText = text; });
+ipcMain.handle('slidex-ed:readDisk', (e) => { try { return fs.readFileSync(edState(e).texPath, 'utf8'); } catch { return null; } });
+ipcMain.handle('slidex-ed:recovery', (e, text) => writeRecovery(edState(e).texPath, text));
+ipcMain.handle('slidex-ed:discardRecovery', (e) => discardRecovery(edState(e).texPath));
 
 /* Present: hide the editor, bring the deck forward on the editor's frame. */
 ipcMain.handle('slidex-ed:present', async (e, key) => {
@@ -490,11 +631,11 @@ ipcMain.handle('slidex-ed:importMedia', async (e, src) => {
   } catch (err) { return { error: err.message }; }
 });
 
-ipcMain.handle('slidex-ed:projectInfo', (e, text) => {
+ipcMain.handle('slidex-ed:projectInfo', async (e, text) => {
   const st = edState(e);
   const dir = path.dirname(st.texPath);
   const base = urlFor(st.root, path.join(dir, 'x')).replace(/x$/, '');
-  return { files: editor.listFiles(st.texPath), baseUrl: base, ...editor.scanMacros(st.texPath, text) };
+  return { files: await editor.listFiles(st.texPath), baseUrl: base, ...editor.scanMacros(st.texPath, text) };
 });
 
 ipcMain.handle('slidex-ed:lineAt', (e, page, x, y) => {
@@ -546,7 +687,10 @@ ipcMain.handle('slidex:notesSave', async (e, page, note) => {
     const frame = frames[map.pages[page]];
     if (!frame) return { ok: false, error: 'no frame for this page' };
     const next = notesLib.setNote(text, frame, note);
-    if (next !== text) editor.saveSource(map.tex, next);
+    if (next !== text) {
+      editor.saveSource(map.tex, next);
+      for (const st of editors.values()) if (st.texPath === map.tex && st.diskText === text) st.diskText = next;
+    }
     for (const st of editors.values()) {            // an open editor gets the same change in its buffer
       if (st.texPath === map.tex && !st.win.isDestroyed()) st.win.webContents.send('slidex-ed:note', { key: editor.frameKey(frame), note });
     }
@@ -580,6 +724,81 @@ ipcMain.handle('slidex:frameGroups', async (e) => {
   } catch { return null; }
 });
 
+/* ------------------------------------------------------- start screen */
+/* Recent decks (prefs), new decks from templates, the example deck, docs. */
+const DOCS_URL = 'https://github.com/wjwhit/SlideX/blob/main/docs/README.md';
+const TEMPLATES = [
+  { id: 'talk', name: 'Talk', about: 'Title slide, outline, sections, conclusions and a backup slide', file: 'talk.tex' },
+  { id: 'update', name: 'Short update', about: 'A title slide and three plain slides', file: 'update.tex' },
+  { id: 'example', name: 'Example deck', about: 'Movies, overlays, figures, boxes and a TikZ node: the deck the docs use', example: true },
+];
+const bundled = (rel) => [path.join(__dirname, rel), path.join(__dirname, '..', rel)].find((p) => fs.existsSync(p));
+function addRecent(pdf, tex) {
+  if (process.argv.includes('--selftest') || process.argv.includes('--shots')) return;     // tests do not touch your list
+  const list = (getPrefs()['slidex.recent'] || []).filter((r) => r && r.pdf !== pdf);
+  const prev = (getPrefs()['slidex.recent'] || []).find((r) => r && r.pdf === pdf);
+  list.unshift({ pdf, tex: tex || (prev && prev.tex) || editor.findSource(pdf) || null, time: Date.now() });
+  setPref('slidex.recent', list.slice(0, 12), true);
+}
+ipcMain.handle('slidex:welcomeInfo', () => {
+  const home = os.homedir();
+  return {
+    version: app.getVersion(),
+    templates: TEMPLATES.map(({ id, name, about }) => ({ id, name, about })),
+    recent: (getPrefs()['slidex.recent'] || []).filter(Boolean).map((r) => ({ pdf: r.pdf, name: path.basename(r.pdf, '.pdf'),
+      folder: path.dirname(r.pdf).replace(home, '~'), time: r.time, exists: fs.existsSync(r.pdf), tex: !!r.tex })),
+  };
+});
+ipcMain.handle('slidex:forgetRecent', (e, pdf) => setPref('slidex.recent', (getPrefs()['slidex.recent'] || []).filter((r) => r && r.pdf !== pdf), true));
+ipcMain.handle('slidex:openSource', (e) => openSource(BrowserWindow.fromWebContents(e.sender)));
+ipcMain.handle('slidex:openDocs', () => shell.openExternal(DOCS_URL));
+ipcMain.handle('slidex:newDeck', (e, id) => newDeck(BrowserWindow.fromWebContents(e.sender), id));
+ipcMain.handle('slidex:openExample', (e) => openExample(BrowserWindow.fromWebContents(e.sender)));
+
+/* Copy the bundled example deck (tex, pdf, media, figures) into dir. */
+function copyExample(dir, texName = 'demo.tex') {
+  const src = bundled('example');
+  if (!src) throw new Error('The example deck is not in this build of SlideX.');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const sub of ['media', 'figures']) if (fs.existsSync(path.join(src, sub))) fs.cpSync(path.join(src, sub), path.join(dir, sub), { recursive: true, force: false, errorOnExist: false });
+  const tex = path.join(dir, texName);
+  fs.copyFileSync(path.join(src, 'demo.tex'), tex);
+  // the PDF last, so it is newer than the .tex and opens without a build
+  if (fs.existsSync(path.join(src, 'demo.pdf'))) fs.copyFileSync(path.join(src, 'demo.pdf'), tex.replace(/\.tex$/, '.pdf'));
+  return tex;
+}
+async function newDeck(win, id) {
+  const t = TEMPLATES.find((x) => x.id === id);
+  if (!t) return;
+  const r = process.env.SLIDEX_SELFTEST_SAVEAS ? { filePath: process.env.SLIDEX_SELFTEST_SAVEAS }      // self-test
+    : await dialog.showSaveDialog(win || undefined, { title: `New deck: ${t.name}`, buttonLabel: 'Create',
+    defaultPath: path.join(app.getPath('documents'), t.example ? 'example.tex' : 'talk.tex'), filters: [{ name: 'LaTeX', extensions: ['tex'] }] });
+  if (r.canceled || !r.filePath) return;
+  const tex = r.filePath.endsWith('.tex') ? r.filePath : r.filePath + '.tex';
+  try {
+    if (t.example) {
+      const dir = path.dirname(tex);
+      const clash = ['media', 'figures'].filter((d) => fs.existsSync(path.join(dir, d)));
+      if (clash.length) {
+        const ok = dialog.showMessageBoxSync(win, { type: 'question', buttons: ['Add the files', 'Cancel'], defaultId: 1,
+          message: `${dir} already has ${clash.join(' and ')}/`, detail: 'The example\'s files are added there; files with the same name are kept, not replaced.' });
+        if (ok !== 0) return;
+      }
+      copyExample(dir, path.basename(tex));
+    } else {
+      fs.copyFileSync(bundled(path.join('templates', t.file)), tex);
+    }
+  } catch (err) { log.error('new deck:', err); dialog.showErrorBox('SlideX', `The deck could not be created:\n${err.message}`); return; }
+  log.info(`new deck (${t.id})`, tex);
+  return openSourcePath(tex, win);
+}
+async function openExample(win) {
+  const dir = path.join(app.getPath('documents'), 'SlideX Example');
+  const tex = path.join(dir, 'demo.tex');
+  try { if (!fs.existsSync(tex)) copyExample(dir); } catch (err) { dialog.showErrorBox('SlideX', err.message); return; }
+  return openSourcePath(tex, win);
+}
+
 ipcMain.handle('slidex:open', (e, p) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (p && /\.pdf$/i.test(p)) {
@@ -602,8 +821,8 @@ ipcMain.handle('slidex:fullscreen', (e) => {
 const prefsFile = () => path.join(app.getPath('userData'), 'prefs.json');
 let prefs = null;
 function getPrefs() { if (!prefs) { try { prefs = JSON.parse(fs.readFileSync(prefsFile(), 'utf8')) || {}; } catch { prefs = {}; } } return prefs; }
-function setPref(k, v) {
-  if (!/^slidex\.[A-Za-z]+$/.test(k) || JSON.stringify(v).length > 200) return;
+function setPref(k, v, internal = false) {
+  if (!/^slidex\.[A-Za-z]+$/.test(k) || (!internal && JSON.stringify(v).length > 200)) return;
   getPrefs()[k] = v;
   try { fs.writeFileSync(prefsFile(), JSON.stringify(prefs, null, 2)); } catch (err) { log.warn('prefs not saved:', err); }
 }
@@ -631,6 +850,7 @@ function buildMenu() {
       { label: 'Edit Source of This Deck', accelerator: 'CmdOrCtrl+E', click: (_, w) => openEditor(w) },
       { role: 'recentDocuments', submenu: [{ role: 'clearRecentDocuments' }] },
       { type: 'separator' },
+      { label: 'Check Deck…', click: (_, w) => checkDeckDialog(w) },
       { label: 'Show in Finder', click: (_, w) => { const p = w && deckOf.get(w.webContents.id); if (p) shell.showItemInFolder(p); } },
       { type: 'separator' },
       { role: 'close' },
@@ -695,7 +915,8 @@ app.whenReady().then(async () => {
   const si = process.argv.indexOf('--shots');
   if (si >= 0) {                                          // documentation screenshots (app/shots.js)
     return require('./shots')({ outDir: path.resolve(process.argv[si + 1]), pdf: path.resolve(files[0]), openDeck, openEditor, showWelcome,
-      editorWindowFor: (deck) => { for (const st of editors.values()) if (st.deckWin === deck) return st.win; return null; }, deckChildren, app });
+      editorWindowFor: (deck) => { for (const st of editors.values()) if (st.deckWin === deck) return st.win; return null; }, deckChildren, app,
+      prefs: { get: (k) => getPrefs()[k], set: (k, v) => setPref(k, v, true) } });
   }
   if (files.length) files.forEach((f) => openDeck(f));
   else showWelcome();
@@ -733,6 +954,66 @@ async function runSelftest(pdf) {
     if (process.env.SLIDEX_SELFTEST_EVAL) {          // any check in the deck window
       console.log('SELFTEST eval', JSON.stringify(await js(process.env.SLIDEX_SELFTEST_EVAL)));
     }
+    if (process.env.SLIDEX_SELFTEST_ROBUST) {        // the file on disk: outside edits, conflicts, recovery, closing
+      const tex = editor.findSource(path.resolve(pdf));
+      const orig = fs.readFileSync(tex, 'utf8');
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const openEd = async () => { await openEditor(win); await sleep(4000); return [...editors.values()].find((st) => st.texPath === tex); };
+      let st = await openEd();
+      const ejs = (c) => st.win.webContents.executeJavaScript(c);
+      const out = {};
+      // 1. an outside edit, editor clean: the editor follows the file
+      console.log('ROBUST step', 1, Date.now() % 100000);
+      fs.writeFileSync(tex, orig.replace('\\begin{document}', '% outside edit 1\n\\begin{document}'));
+      await sleep(2500);
+      out.cleanFollows = await ejs(`({ has: view.state.doc.toString().includes('% outside edit 1'), dirty: S.dirty })`);
+      // 2. unsaved edits here, then an outside edit: a banner, nothing lost
+      console.log('ROBUST step', 2, Date.now() % 100000);
+      await ejs(`edit({ from: 0, insert: '% my edit\\n' }, 'test')`);
+      fs.writeFileSync(tex, fs.readFileSync(tex, 'utf8').replace('% outside edit 1', '% outside edit 2'));
+      await sleep(2500);
+      out.dirtyBanner = await ejs(`({ banner: !$('banner').hidden && $('banner').textContent.slice(0, 60), mine: view.state.doc.toString().startsWith('% my edit') })`);
+      // 3. save without answering: refused, then the conflict banner
+      console.log('ROBUST step', 3, Date.now() % 100000);
+      await ejs(`hideBanner()`);
+      out.saveRefused = await ejs(`save().then((ok) => ({ ok, banner: !$('banner').hidden && $('banner').textContent.slice(0, 50) }))`);
+      out.diskUntouched = fs.readFileSync(tex, 'utf8').includes('% outside edit 2') && !fs.readFileSync(tex, 'utf8').includes('% my edit');
+      // 4. a recovery copy appears; the window dies; reopening offers it
+      console.log('ROBUST step', 4, Date.now() % 100000);
+      await ejs(`edit({ from: 0, insert: '% unsaved\\n' }, 'test')`);
+      await sleep(3500);
+      const rf = path.join(editor.buildDir(tex), 'recovery', path.basename(tex));
+      out.recoveryWritten = fs.existsSync(rf) && fs.readFileSync(rf, 'utf8').startsWith('% unsaved');
+      st.win.destroy(); await sleep(1500);
+      st = await openEd();
+      out.recoveryOffered = await st.win.webContents.executeJavaScript(`!$('banner').hidden && $('banner').textContent.slice(0, 50)`);
+      // 5. closing with unsaved edits, answer "Save": the file gets them, the window closes
+      console.log('ROBUST step', 5, Date.now() % 100000);
+      await st.win.webContents.executeJavaScript(`hideBanner(); edit({ from: 0, insert: '% saved on close\\n' }, 'test')`);
+      process.env.SLIDEX_SELFTEST_CLOSEANSWER = '0';
+      st.win.close(); await sleep(2500);
+      out.savedOnClose = { closed: st.win.isDestroyed(), inFile: fs.readFileSync(tex, 'utf8').startsWith('% saved on close') };
+      delete process.env.SLIDEX_SELFTEST_CLOSEANSWER;
+      fs.writeFileSync(tex, orig); fs.rmSync(rf, { force: true });
+      console.log('SELFTEST robust', JSON.stringify(out));
+    }
+    if (process.env.SLIDEX_SELFTEST_NEWDECK) {        // a new deck from a template, saved where SLIDEX_SELFTEST_SAVEAS says
+      let from = win;
+      if (process.env.SLIDEX_SELFTEST_FROMWELCOME) {      // as from the start window, which becomes the deck window
+        from = showWelcome({ hidden: true });
+        await new Promise((r) => from.webContents.once('did-finish-load', r));
+      }
+      const before = new Set(BrowserWindow.getAllWindows().map((w) => w.id));
+      await newDeck(from, process.env.SLIDEX_SELFTEST_NEWDECK);
+      await new Promise((r) => setTimeout(r, 5000));
+      const tex = process.env.SLIDEX_SELFTEST_SAVEAS;
+      const st = [...editors.values()].find((x) => x.texPath === tex);
+      console.log('SELFTEST newdeck', JSON.stringify({ tex: fs.existsSync(tex), pdf: fs.existsSync(tex.replace(/\.tex$/, '.pdf')),
+        newWindows: BrowserWindow.getAllWindows().filter((w) => !before.has(w.id)).length, editor: !!st,
+        status: st ? await st.win.webContents.executeJavaScript(`document.getElementById('status').textContent`) : null,
+        editorState: st ? await st.win.webContents.executeJavaScript(`({ compiling: S.compiling, preview: !!S.preview, frames: S.frames.length, thumbs: document.querySelectorAll('#strip .thumb').length, err: (window.__err || null) })`) : null }));
+    }
+    if (process.env.SLIDEX_SELFTEST_CHECK) console.log('SELFTEST check', JSON.stringify(checkDeck(path.resolve(pdf))));
     if (process.env.SLIDEX_SELFTEST_CRASHLOG) {      // the log: a console error, an uncaught error, a renderer crash
       await js(`console.error('selftest console error'); setTimeout(() => { throw new Error('selftest uncaught error'); }, 0); 1`);
       await wait(500);

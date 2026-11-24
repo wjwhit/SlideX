@@ -4,39 +4,133 @@
 <meta charset="utf-8">
 <title>SlideX</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #111; color: #ddd;
-    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; }
-  #drop { position: absolute; inset: 20px; border: 2px dashed #444; border-radius: 14px;
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
-    text-align: center; transition: border-color .15s, background .15s; }
-  #drop.over { border-color: #6cf; background: rgba(102, 204, 255, .06); }
-  h1 { margin: 0; font-size: 26px; font-weight: 600; color: #fff; }
-  p { margin: 0; color: #999; }
-  button { font: inherit; font-size: 16px; padding: 8px 22px; border-radius: 8px; border: 0;
-    background: #2f7fd1; color: #fff; cursor: pointer; }
-  button:hover { background: #3a8ee6; }
-  code { color: #9cf; }
+  :root { --bg: #121315; --panel: #1b1d21; --line: #2c3036; --text: #dfe2e6; --dim: #8d939b; --accent: #3d8bfd; --hover: #23262b; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f5f7; --panel: #ffffff; --line: #dde1e6; --text: #1f2328; --dim: #5f6873; --accent: #2f6fd6; --hover: #eef1f5; }
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; }
+  [hidden] { display: none !important; }
+  #page { position: absolute; inset: 0; display: grid; grid-template-columns: minmax(330px, 1fr) minmax(280px, 0.9fr); }
+  #left { padding: 28px 32px; overflow-y: auto; }
+  #right { padding: 28px 26px; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line); }
+  #logo { height: 56px; display: block; margin-bottom: 4px; }
+  @media (prefers-color-scheme: light) { #logo { filter: invert(1) hue-rotate(180deg); } }
+  .tag { color: var(--dim); margin: 0 0 22px; }
+  h2 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim); margin: 22px 0 8px; font-weight: 600; }
+  .act { all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 1px; width: 100%; padding: 8px 10px; margin: 2px 0;
+    border-radius: 8px; cursor: pointer; }
+  .act:hover, .act:focus-visible { background: var(--hover); }
+  .act b { font-weight: 600; }
+  .act span { color: var(--dim); font-size: 12.5px; }
+  .act.primary { background: var(--accent); color: #fff; flex-direction: row; align-items: baseline; justify-content: center; gap: 10px; margin-bottom: 6px; }
+  .act.primary span { color: rgba(255, 255, 255, .8); }
+  .act.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  #templates { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 4px 0 6px; }
+  .tpl { all: unset; box-sizing: border-box; border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px; cursor: pointer; background: var(--panel); }
+  .tpl:hover, .tpl:focus-visible { border-color: var(--accent); }
+  .tpl b { display: block; font-weight: 600; margin-bottom: 2px; }
+  .tpl span { color: var(--dim); font-size: 12px; line-height: 1.35; display: block; }
+  #keys { color: var(--dim); font-size: 12.5px; margin: 6px 10px; }
+  kbd { font: 11.5px ui-monospace, Menlo, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: var(--text); }
+  #recent { list-style: none; padding: 0; margin: 0; }
+  #recent li { display: flex; align-items: center; gap: 6px; border-radius: 8px; }
+  #recent li:hover { background: var(--hover); }
+  #recent .open { all: unset; flex: 1; min-width: 0; padding: 7px 10px; cursor: pointer; }
+  #recent .open b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #recent .open span { display: block; color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #recent li.gone .open { cursor: default; opacity: .45; }
+  #recent .x { all: unset; color: var(--dim); padding: 4px 9px; cursor: pointer; font-size: 15px; visibility: hidden; }
+  #recent li:hover .x { visibility: visible; }
+  #empty { color: var(--dim); font-size: 13px; }
+  #drop { position: fixed; inset: 10px; border: 2px dashed var(--accent); border-radius: 14px; background: rgba(61, 139, 253, .07);
+    display: flex; align-items: center; justify-content: center; font-size: 18px; pointer-events: none; }
+  #foot { color: var(--dim); font-size: 12px; margin-top: 26px; }
 </style>
 </head>
 <body>
-<div id="drop">
-  <h1><img src="wordmark-light.svg" alt="SlideX" style="height:64px;display:block"></h1>
-  <p>Drop a beamer PDF here, or</p>
-  <button id="open">Open PDF…</button>
-  <p>Movies placed with the slidemovie LaTeX package (<code>\slidemovie{…}</code>) play in place.<br>
-     Press <code>?</code> in a deck for keys, <code>s</code> for the presenter window.</p>
+<div id="page">
+  <section id="left">
+    <img id="logo" src="wordmark-light.svg" alt="SlideX">
+    <p class="tag">Present beamer PDFs with movies that play, and edit their LaTeX one slide at a time.</p>
+
+    <button class="act primary" id="open"><b>Open a deck…</b><span>a PDF; or drop it here</span></button>
+
+    <h2>Write</h2>
+    <div id="templates"></div>
+    <button class="act" id="source"><b>Open LaTeX source…</b><span>a .tex: built if needed, then opened in the editor</span></button>
+    <button class="act" id="example"><b>Open the example deck</b><span>copied to Documents/SlideX Example, so you can change it</span></button>
+
+    <h2>Learn</h2>
+    <button class="act" id="docs"><b>Documentation ↗</b><span>presenting, movies, the editor, with screenshots</span></button>
+    <p id="keys">In a deck: <kbd>→</kbd> next · <kbd>f</kbd> full screen · <kbd>s</kbd> presenter window · <kbd>l</kbd> laser ·
+      <kbd>m</kbd> magnifier · <kbd>⌘E</kbd> editor · <kbd>?</kbd> all keys</p>
+    <p id="foot"></p>
+  </section>
+  <section id="right">
+    <h2 style="margin-top:4px">Recent</h2>
+    <ul id="recent"></ul>
+    <p id="empty" hidden>Decks you open show up here.</p>
+  </section>
 </div>
+<div id="drop" hidden>Drop a PDF to present it</div>
 <script>
   const api = window.slidexApp;
-  document.getElementById('open').onclick = () => api && api.open();
-  const drop = document.getElementById('drop');
-  addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
-  addEventListener('dragleave', () => drop.classList.remove('over'));
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  if (!api) document.body.textContent = 'This page runs inside the SlideX app.';
+
+  $('open').onclick = () => api.open();
+  $('source').onclick = () => api.openSource();
+  $('example').onclick = () => api.openExample();
+  $('docs').onclick = () => api.openDocs();
+
+  function ago(t) {
+    const s = (Date.now() - t) / 1000;
+    if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
+    if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+    if (s < 86400 * 14) return `${Math.round(s / 86400)} d ago`;
+    return new Date(t).toLocaleDateString();
+  }
+  async function load() {
+    const info = await api.welcomeInfo();
+    const tp = $('templates');
+    tp.innerHTML = '';
+    for (const t of info.templates) {
+      const b = el('button', 'tpl'); b.title = `New deck from the ${t.name} template`;
+      b.append(el('b', null, t.name), el('span', null, t.about));
+      b.onclick = () => api.newDeck(t.id);
+      tp.append(b);
+    }
+    const ul = $('recent');
+    ul.innerHTML = '';
+    for (const r of info.recent) {
+      const li = el('li', r.exists ? '' : 'gone');
+      const o = el('button', 'open');
+      o.append(el('b', null, r.name), el('span', null, `${r.folder} · ${r.exists ? ago(r.time) : 'moved or deleted'}`));
+      o.title = r.pdf;
+      if (r.exists) o.onclick = () => api.open(r.pdf);
+      const x = el('button', 'x', '×'); x.title = 'Remove from this list';
+      x.onclick = async () => { await api.forgetRecent(r.pdf); load(); };
+      li.append(o, x);
+      ul.append(li);
+    }
+    $('empty').hidden = info.recent.length > 0;
+    $('foot').textContent = `SlideX ${info.version}`;
+  }
+  if (api) load();
+
+  // drop a PDF anywhere
+  let depth = 0;
+  addEventListener('dragenter', (e) => { e.preventDefault(); depth++; $('drop').hidden = false; });
+  addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; $('drop').hidden = true; } });
+  addEventListener('dragover', (e) => e.preventDefault());
   addEventListener('drop', (e) => {
-    e.preventDefault(); drop.classList.remove('over');
+    e.preventDefault(); depth = 0; $('drop').hidden = true;
     const f = e.dataTransfer.files[0];
     if (f && api) api.open(api.pathForFile(f));
   });
+  addEventListener('focus', () => api && load());           // recent decks may have changed
 </script>
 </body>
 </html>

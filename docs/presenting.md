@@ -6,9 +6,21 @@
 
 Open a PDF with File > Open (Cmd-O), by dropping it on the window or on the
 Dock icon, or with Finder's Open With > SlideX. With nothing open, SlideX
-shows its welcome window: drop a PDF on it or click Open PDF.
+shows its start window:
 
-![Welcome window](images/welcome.png)
+- **Open a deck** (or drop a PDF anywhere on the window);
+- **New deck from a template:** *Talk* (title slide, outline, sections,
+  conclusions, a backup slide), *Short update* (a title slide and three plain
+  slides) or the *Example deck*. Choose where to save it; SlideX builds it and
+  opens it in the [editor](editor.md). The templates are plain beamer, so the
+  `.tex` builds anywhere;
+- **Open LaTeX source** (built first if its PDF is missing or older);
+- **Open the example deck**, copied to `Documents/SlideX Example` so you can
+  change it;
+- the **documentation**, and the main keys;
+- **Recent** decks on the right (× removes one from the list).
+
+![The start window](images/welcome.png)
 
 Press `f` for full screen. With a projector connected, press `s` for the
 presenter window: the slides go full screen on the projector and the
@@ -30,6 +42,15 @@ presenter view stays on the laptop. Press `?` at any time for every key.
 | b or . / w | black or white screen |
 | t | reset the timer |
 | Esc | turn off the laser or magnifier, close the help; otherwise leave full screen |
+
+## Before a talk: Check Deck
+
+File > Check Deck… looks at every movie the PDF links to: that it exists, is
+readable and inside the folder SlideX serves, and is in a format SlideX plays
+(H.264, HEVC, VP8/9 or AV1 in mp4, mov or webm, or a GIF; checked with
+`ffprobe` when ffmpeg is installed, else by file name). It also says where the
+speaker notes are kept. A movie that would not play gets the command that
+fixes it.
 
 ## Movies on the slide
 

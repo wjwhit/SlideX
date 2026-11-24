@@ -12,6 +12,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { log: applog } = require('./log');   // ("log" is the LaTeX log in places)
 const { spawn } = require('child_process');
 
 let synctexLib = null;
@@ -135,16 +136,32 @@ function frameAtLine(frames, line) {
 /* ------------------------------------------------------------ compile */
 function buildDir(texPath) { return path.join(path.dirname(texPath), '.slidex'); }
 
+/* Run a TeX tool. No stdin (it can never wait for input); its own process
+ * group, so a timeout stops it and anything it started (mktexpk, ...); done
+ * when it exits, even if a helper still holds its output open. */
 function run(cmd, args, cwd, timeoutMs = 120000) {
   return new Promise((resolve) => {
     const t0 = Date.now();
-    const p = spawn(cmd, args, { cwd, env: ENV });
-    let out = '';
+    let p;
+    try { p = spawn(cmd, args, { cwd, env: ENV, stdio: ['ignore', 'pipe', 'pipe'], detached: true }); }
+    catch (err) { resolve({ code: -1, out: String(err), ms: 0 }); return; }
+    let out = '', done = false, timedOut = false;
+    const finish = (code) => {
+      if (done) return;
+      done = true; clearTimeout(timer);
+      if (timedOut) out += `\n! SlideX stopped ${cmd} after ${Math.round(timeoutMs / 1000)} s.\n`;
+      resolve({ code: timedOut ? -2 : code, out, ms: Date.now() - t0, timedOut });
+    };
     p.stdout.on('data', (d) => { out += d; });
     p.stderr.on('data', (d) => { out += d; });
-    const timer = setTimeout(() => p.kill('SIGKILL'), timeoutMs);
-    p.on('close', (code) => { clearTimeout(timer); resolve({ code, out, ms: Date.now() - t0 }); });
-    p.on('error', (err) => { clearTimeout(timer); resolve({ code: -1, out: String(err), ms: Date.now() - t0 }); });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      applog.warn(`${cmd} still running after ${Math.round(timeoutMs / 1000)} s in ${cwd}: stopped`);
+      try { process.kill(-p.pid, 'SIGKILL'); } catch { try { p.kill('SIGKILL'); } catch { /* gone */ } }
+    }, timeoutMs);
+    p.on('exit', (code) => setTimeout(() => finish(code), 300));   // pipes may stay open in a helper
+    p.on('close', (code) => finish(code));
+    p.on('error', (err) => { out += String(err); finish(-1); });
   });
 }
 
@@ -234,6 +251,7 @@ async function ensureFormat(texPath, text) {
   if (safeRead(keyFile) === key && fs.existsSync(path.join(bdir, `${name}.fmt`))) return name;
   const src = path.join(bdir, `${name}-src.tex`);
   fs.writeFileSync(src, pre + '\\begin{document}\n\\end{document}\n');
+  applog.info(`preamble: building the precompiled preamble for ${path.basename(texPath)}`);
   const r = await run('pdflatex', ['-ini', '-interaction=nonstopmode', '-output-directory=.slidex',
     `-jobname=${name}`, '&pdflatex', 'mylatexformat.ltx', path.relative(dir, src)], dir);
   if (r.code !== 0 || !fs.existsSync(path.join(bdir, `${name}.fmt`))) return null;
@@ -378,10 +396,11 @@ async function compileFrame(texPath, frame, text, opts = {}) {
   args.push(path.relative(dir, srcPath));
   let hadMarks = prepareAux(texPath, job);
   const t0 = Date.now() - 1000;
-  let r = await run('pdflatex', args, dir);
+  applog.info(`slide ${frameName(frame)}: pdflatex (${path.basename(texPath)})`);
+  let r = await run('pdflatex', args, dir, 60000);
   if (!hadMarks && /remember picture/.test(text.split('\n').slice(frame.start - 1, frame.end).join('\n'))) {
     hadMarks = prepareAux(texPath, job);                      // second pass for remember picture
-    if (hadMarks) { const r2 = await run('pdflatex', args, dir); r = { ...r2, ms: r.ms + r2.ms }; }
+    if (hadMarks) { const r2 = await run('pdflatex', args, dir, 60000); r = { ...r2, ms: r.ms + r2.ms }; }
   }
   const pdf = path.join(bdir, `${job}.pdf`);
   const log = safeRead(path.join(bdir, `${job}.log`)) || r.out;
@@ -392,6 +411,7 @@ async function compileFrame(texPath, frame, text, opts = {}) {
   for (const m of (log || '').matchAll(/^SLIDEXLW (\d+) (\S+)pt$/gm)) probes.lw[m[1]] = pt(m[2]);
   for (const m of (log || '').matchAll(/^SLIDEXTP (\d+) (\S+)pt\/(\S+)pt$/gm)) probes.tp[m[1]] = [pt(m[2]), pt(m[3])];
   const ok = r.code === 0 && fs.existsSync(pdf);
+  applog.info(`slide ${frameName(frame)}: ${r.timedOut ? 'stopped (too long)' : `exit ${r.code}`} in ${(r.ms / 1000).toFixed(2)} s, ${errors.length} error(s)`);
   if (so.madeFragile && (!ok || errors.length)) {
     // a frame that cannot be fragile (or a real error): try it as written;
     // keep that result only if it is clean, else report the fragile run's
@@ -633,32 +653,41 @@ function frameName(f) { return f.label || `frame ${f.index + 1}`; }
 /* ---------------------------------------------------------- completion */
 /* Files under the deck's folder that \includegraphics, \slidemovie and
  * \input can take (relative paths; build and hidden folders skipped). */
-function listFiles(texPath, maxFiles = 4000) {
+/* Files near the deck that \includegraphics, \slidemovie, \input and friends
+ * can use (for completion). Asynchronous and bounded, so a deck sitting in a
+ * big folder (home, Documents, a synced drive whose folders list slowly) never
+ * holds up the app: at most 2000 entries, 3 levels, about half a second;
+ * hidden folders, libraries and app bundles are skipped, and a deck directly in
+ * the home, Documents or Desktop folder gets only its own folder listed. */
+const SKIP_DIR = /^(node_modules|Library|Applications|.*\.(app|photoslibrary|musiclibrary|tvlibrary|bundle|framework|lproj|xcassets))$/i;
+async function listFiles(texPath, { maxFiles = 2000, maxDepth = 3, budgetMs = 500 } = {}) {
   const dir = path.dirname(texPath);
+  const home = require('os').homedir();
+  const shallow = [home, path.join(home, 'Documents'), path.join(home, 'Desktop'), path.join(home, 'Downloads')].includes(dir);
+  const t0 = Date.now();
   const out = [];
-  const walk = (d, depth) => {
-    if (depth > 5 || out.length >= maxFiles) return;
+  const walk = async (d, depth) => {
+    if (depth > (shallow ? 0 : maxDepth) || out.length >= maxFiles || Date.now() - t0 > budgetMs) return;
     let ents;
-    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    try { ents = await fs.promises.readdir(d, { withFileTypes: true }); } catch { return; }
     for (const e of ents) {
-      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      if (out.length >= maxFiles || Date.now() - t0 > budgetMs) return;
+      if (e.name.startsWith('.') || SKIP_DIR.test(e.name)) continue;
       const full = path.join(d, e.name);
-      let isDir = e.isDirectory();
-      if (e.isSymbolicLink()) { try { isDir = fs.statSync(full).isDirectory(); } catch { continue; } }
-      if (isDir) walk(full, depth + 1);
-      else if (/\.(pdf|png|jpe?g|eps|svg|mp4|m4v|mov|webm|gif|tex|sty|bib)$/i.test(e.name) && full !== texPath) {
+      if (e.isDirectory()) await walk(full, depth + 1);              // symbolic links are not followed
+      else if (e.isFile() && /\.(pdf|png|jpe?g|eps|svg|mp4|m4v|mov|webm|gif|tex|sty|bib)$/i.test(e.name) && full !== texPath) {
         out.push(path.relative(dir, full).split(path.sep).join('/'));
       }
-      if (out.length >= maxFiles) return;
     }
   };
-  walk(dir, 0);
+  await walk(dir, 0);
+  if (Date.now() - t0 > budgetMs) applog.info(`file list for completion cut short after ${Date.now() - t0} ms (${out.length} files) in ${dir}`);
   return out.sort();
 }
 
 /* Commands and environments the deck defines: its preamble, files it \input s
  * from its folder, and local .sty files. */
-/* The deck's text, its \input/\include files, and the .sty files beside it. */
+/* The deck's text, its \input/\include files, and the .sty files beside it that it loads. */
 function deckSources(texPath, text) {
   const dir = path.dirname(texPath);
   const sources = [text];
@@ -666,7 +695,11 @@ function deckSources(texPath, text) {
     const f = path.join(dir, m[1].endsWith('.tex') ? m[1] : m[1] + '.tex');
     const t = safeRead(f); if (t) sources.push(t);
   }
-  try { for (const f of fs.readdirSync(dir)) if (/\.sty$/.test(f)) { const t = safeRead(path.join(dir, f)); if (t) sources.push(t); } } catch { /* none */ }
+  // only the packages and themes this deck loads, from its folder (not every .sty there)
+  const names = new Set();
+  for (const m of text.matchAll(/\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) for (const n of m[1].split(',')) names.add(n.trim() + '.sty');
+  for (const m of text.matchAll(/\\use(color|font|inner|outer|)theme\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) names.add(`beamer${m[1]}theme${m[2].trim()}.sty`);
+  for (const n of names) { const t = safeRead(path.join(dir, n)); if (t) sources.push(t); }
   return sources;
 }
 

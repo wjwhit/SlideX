@@ -34,12 +34,16 @@ module.exports = async function shots(ctx) {
     'slide 3': 'Half speed on the left; the right one waits for a click.',
   } }, null, 2));
 
-  // welcome
+  // welcome, with only the example deck in its recent list (yours is put back after)
+  const recentWas = ctx.prefs && ctx.prefs.get('slidex.recent');
+  if (ctx.prefs) ctx.prefs.set('slidex.recent', [{ pdf, tex: pdf.replace(/\.pdf$/, '.tex'), time: Date.now() - 3600e3 }]);
   const welcome = showWelcome({ hidden: true });
+  welcome.setContentSize(940, 600);
   await new Promise((r) => welcome.webContents.once('did-finish-load', r));
   await wait(600);
   await shot(welcome, 'welcome');
   welcome.close();
+  if (ctx.prefs) ctx.prefs.set('slidex.recent', recentWas || []);
 
   // the deck
   const deck = openDeck(pdf, { hidden: true });
