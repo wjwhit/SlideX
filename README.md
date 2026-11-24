@@ -20,7 +20,21 @@ presenter window shows the current and next slide, a timer and your notes.
   share it), saved next to the PDF.
 - **beamer aware:** `show notes on second screen` decks are split automatically;
   internal links (navigation buttons, `\hyperlink`) work.
+- **Editor.** The deck's LaTeX next to its slides: one-slide compiles in about
+  half a second, the source line under the mouse highlighted on the slide and
+  back, completion, and figures, movies and boxes resized by dragging them.
 - Fully offline. macOS on Apple silicon for now.
+
+![The SlideX editor on the example deck](docs/images/editor.png)
+
+## Documentation
+
+Guides with screenshots, all made with the [example deck](example/demo.tex):
+
+- [Presenting](docs/presenting.md): keys, presenter window, laser, magnifier, slides panel, notes
+- [Movies and GIFs](docs/movies.md): the `slidemovie` package, options, posters, sending a deck
+- [The editor](docs/editor.md): one-slide compiles, highlighting, completion, resizing, captions, errors
+- [Frames for the editor](docs/frames.md): the `slidexframes` package
 
 ## Install
 
@@ -100,7 +114,8 @@ building it first if its PDF is missing or older.
   copied into `./figures/` (GIFs and frames become mp4 with a poster, needs
   ffmpeg) and the `\includegraphics`/`\slidemovie` line is inserted.
 - **Find** (Cmd-F): a search bar over the code, with replace.
-- Edit menu: undo, redo, cut, copy, paste, select all, find.
+- Edit menu: undo, redo, cut, copy, paste, select all, find. View menu:
+  bigger, smaller and default code text size (Cmd-=, Cmd--, Cmd-0).
 - LaTeX errors are listed under the preview and marked in the code.
 - Before the first save in a session, the original source is copied to
   `.slidex/backups/`. Builds go to `.slidex/` next to the deck.
@@ -111,12 +126,15 @@ so line numbers match, frame and page counters set as in the deck), with the
 preamble precompiled. On the test deck the result is pixel-identical to the
 full build's pages.
 
-Frames need a `label=` to compile on their own. For line-by-line highlighting,
-frames must be **fragile** environments set up as in
-[latex/README.md](latex/README.md#frames-for-slidexs-editor-mode): beamer
-collects a normal frame's body before typesetting it, so SyncTeX can only
-point at the end of the frame. Other frames still compile and preview, with
-frame-level highlighting.
+Any frame compiles on its own, with or without a `label=`. For line-by-line
+highlighting, frames must be **fragile** environments, such as `sframe` from
+the bundled [`slidexframes` package](docs/frames.md): beamer collects a normal
+frame's body before typesetting it, so SyncTeX can only point at the end of
+the frame. Other frames still compile and preview, with frame-level
+highlighting. Neither `slidexframes` nor `slidemovie` is required: a plain
+beamer deck works as it is, and `slidemovie` is only for decks with movies
+(dropping a movie on the editor adds it). SlideX puts its bundled `latex/`
+folder on `TEXINPUTS`, so both work in the editor without copying them.
 
 ## Building
 

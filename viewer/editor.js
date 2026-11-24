@@ -200,7 +200,7 @@ async function compileFrame() {
   S.compiling = true;
   pending = false;
   $('preview').classList.add('busy');
-  status(`Compiling ${f.label || 'frame'}…`);
+  status(`Compiling ${f.label || 'frame ' + (f.index + 1)}…`);
   const version = S.version;
   try {
     // the cursor may sit between frames: then recompile the frame last shown
@@ -208,18 +208,18 @@ async function compileFrame() {
     const r = await api.compileFrame(view.state.doc.toString(), line);
     applyFrames(r.frames);
     showErrors(r.errors || []);
-    showLog(`Slide ${r.label || ''}`, r.log, r.errors);
+    showLog(`Slide ${r.name || ''}`, r.log, r.errors);
     if (r.ok && r.url) {
       S.cache.clear();                           // other frames may depend on what changed
-      const nf = S.frames.find((x) => x.label === r.label) || f;
+      const nf = S.frames.find((x) => frameKeyOf(x) === r.key) || f;
       S.frame = nf;
       view.dispatch({ effects: setFrame.of({ start: nf.start, end: nf.end }) });
-      const p = { label: r.label, url: r.url + '?t=' + Date.now(), exact: r.exact,
-        page: S.preview && S.preview.label === r.label ? S.preview.page : 1 };
-      S.cache.set(r.label, p);
+      const p = { key: r.key, url: r.url + '?t=' + Date.now(), exact: r.exact,
+        page: S.preview && S.preview.key === r.key ? S.preview.page : 1 };
+      S.cache.set(r.key, p);
       S.stale = S.version !== version;
       await showPreview(p);
-      status(`${r.label} · ${(r.ms / 1000).toFixed(2)} s` + (r.exact ? '' : ' · frame-level'),
+      status(`${r.name} · ${(r.ms / 1000).toFixed(2)} s` + (r.exact ? '' : ' · frame-level'),
         r.errors && r.errors.length ? 'bad' : 'good',
         r.exact ? '' : 'Highlighting is per frame here: this frame is not a fragile environment (see latex/README.md).');
     } else {
@@ -1046,6 +1046,17 @@ $('btn-compile-present').onclick = async () => {
 $('framepick').onchange = () => { const f = S.frames[+$('framepick').value]; if (f) gotoLine(f.bodyStart); };
 addEventListener('beforeunload', (e) => { if (S.dirty) { e.preventDefault(); e.returnValue = ''; } });
 
+/* Code text size (View menu, Cmd-+ / Cmd-- / Cmd-0), remembered. */
+function codeSize() { return parseFloat(getComputedStyle($('code')).getPropertyValue('--code-size')) || 13; }
+function setCodeSize(px) {
+  px = Math.max(10, Math.min(24, Math.round(px)));
+  $('code').style.setProperty('--code-size', px + 'px');
+  try { localStorage.setItem('slidex.codeSize', px); } catch { /* no storage */ }
+  if (view) view.requestMeasure();
+  status(`Code text ${px} pt`);
+}
+try { const px = +localStorage.getItem('slidex.codeSize'); if (px) $('code').style.setProperty('--code-size', px + 'px'); } catch { /* no storage */ }
+
 /* Edit-menu commands from the app (undo, redo, select all, find). */
 window.editorCommand = (name) => {
   if (!view) return;
@@ -1053,6 +1064,9 @@ window.editorCommand = (name) => {
   else if (name === 'redo') CM.redo(view);
   else if (name === 'selectAll') view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
   else if (name === 'find') { CM.openSearchPanel(view); return; }   // the search field keeps the focus
+  else if (name === 'fontBigger') setCodeSize(codeSize() + 1);
+  else if (name === 'fontSmaller') setCodeSize(codeSize() - 1);
+  else if (name === 'fontReset') setCodeSize(13);
   view.focus();
 };
 

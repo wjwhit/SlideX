@@ -35,10 +35,10 @@ run('ditto', [src, appPath]);           // keeps symlinks and framework layout
 const res = path.join(appPath, 'Contents', 'Resources');
 const appDir = path.join(res, 'app');
 fs.mkdirSync(appDir);
-for (const f of ['main.js', 'preload.js', 'editor.js', 'synctex.js']) fs.copyFileSync(path.join(here, f), path.join(appDir, f));
+for (const f of ['main.js', 'preload.js', 'editor.js', 'synctex.js', 'shots.js']) fs.copyFileSync(path.join(here, f), path.join(appDir, f));
 run('ditto', [path.join(here, 'viewer'), path.join(appDir, 'viewer')]);
 fs.mkdirSync(path.join(appDir, 'latex'));
-fs.copyFileSync(path.join(here, '..', 'latex', 'slidemovie.sty'), path.join(appDir, 'latex', 'slidemovie.sty'));   // for drop-in movies
+for (const f of ['slidemovie.sty', 'slidexframes.sty']) fs.copyFileSync(path.join(here, '..', 'latex', f), path.join(appDir, 'latex', f));   // on SlideX's TeX search path
 { // runtime package.json: no scripts or dev dependencies
   const pkg = require('./package.json');
   fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify(

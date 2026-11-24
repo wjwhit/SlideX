@@ -274,9 +274,9 @@ async function chooseDeck(win) {
   openDeck(r.filePaths[0], { reuse });
 }
 
-function showWelcome() {
+function showWelcome(opts = {}) {
   const win = new BrowserWindow({
-    width: 720, height: 460, backgroundColor: '#111111', title: 'SlideX',
+    width: 720, height: 460, backgroundColor: '#111111', title: 'SlideX', show: !opts.hidden,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
   setupWindow(win);
@@ -340,7 +340,7 @@ async function openEditor(deckWin) {
   const { root } = deckRoot(pdfPath);
   const win = new BrowserWindow({
     width: 1500, height: 920, backgroundColor: '#1b1d21', title: 'SlideX editor: ' + path.basename(texPath),
-    show: !process.argv.includes('--selftest'),
+    show: !process.argv.includes('--selftest') && !process.argv.includes('--shots'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), backgroundThrottling: false },
   });
   setupWindow(win);
@@ -412,7 +412,7 @@ ipcMain.handle('slidex-ed:compileFrame', async (e, text, line) => {
     st.sync = await editor.loadSync(st.texPath, r, frame).catch(() => null);
     st.syncFrame = frame;
   }
-  return { ok: r.ok, url: r.pdf ? urlFor(st.root, r.pdf) : null, label: r.label, exact: !!(st.sync && st.sync.exact),
+  return { ok: r.ok, url: r.pdf ? urlFor(st.root, r.pdf) : null, key: r.key, name: r.name, exact: !!(st.sync && st.sync.exact),
     frames: st.frames, errors: mapErrors(st, r.errors || []), ms: r.ms, fmt: r.fmt, log: tailLog(r.log) };
 });
 
@@ -512,6 +512,7 @@ function editCommand(w, name) {
   if (!w) return;
   const wc = w.webContents;
   if (editors.has(wc.id)) { wc.executeJavaScript(`window.editorCommand && editorCommand(${JSON.stringify(name)})`).catch(() => {}); return; }
+  if (/^font/.test(name)) return;                     // code text size: editor windows only
   if (name === 'undo') wc.undo();
   else if (name === 'redo') wc.redo();
   else if (name === 'selectAll') wc.selectAll();
@@ -545,6 +546,11 @@ function buildMenu() {
     { label: 'View', submenu: [
       { label: 'Presenter Window', accelerator: 'CmdOrCtrl+P',
         click: (_, w) => w && w.webContents.executeJavaScript("document.dispatchEvent(new KeyboardEvent('keydown',{key:'s'}))") },
+      { type: 'separator' },
+      { label: 'Bigger Code Text', accelerator: 'CmdOrCtrl+=', click: (_, w) => editCommand(w, 'fontBigger') },
+      { label: 'Smaller Code Text', accelerator: 'CmdOrCtrl+-', click: (_, w) => editCommand(w, 'fontSmaller') },
+      { label: 'Default Code Text Size', accelerator: 'CmdOrCtrl+0', click: (_, w) => editCommand(w, 'fontReset') },
+      { type: 'separator' },
       { label: 'Keyboard Shortcuts', accelerator: 'CmdOrCtrl+/',
         click: (_, w) => w && w.webContents.executeJavaScript("document.dispatchEvent(new KeyboardEvent('keydown',{key:'?'}))") },
       { type: 'separator' },
@@ -572,6 +578,11 @@ app.whenReady().then(async () => {
   const args = process.argv.slice(app.isPackaged ? 1 : 2).filter((a) => /\.pdf$/i.test(a));
   const files = [...pending, ...args];
   if (selftest) return runSelftest(files[0]);
+  const si = process.argv.indexOf('--shots');
+  if (si >= 0) {                                          // documentation screenshots (app/shots.js)
+    return require('./shots')({ outDir: path.resolve(process.argv[si + 1]), pdf: path.resolve(files[0]), openDeck, openEditor, showWelcome,
+      editorWindowFor: (deck) => { for (const st of editors.values()) if (st.deckWin === deck) return st.win; return null; }, deckChildren, app });
+  }
   if (files.length) files.forEach((f) => openDeck(f));
   else showWelcome();
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) showWelcome(); });
@@ -617,7 +628,7 @@ async function runSelftest(pdf) {
       for (let i = 0; i < 60; i++) { await wait(500); if (await ejs('!!(window.S && S.preview && S.preview.page)')) break; }
       const label = process.env.SLIDEX_SELFTEST_EDITOR;
       const res = await ejs(`(async () => {
-        const f = S.frames.find((x) => x.label === ${JSON.stringify(label)});
+        const f = S.frames.find((x) => frameKeyOf(x) === ${JSON.stringify(label)});
         gotoLine(f.bodyStart + 5, false);
         await new Promise((r) => setTimeout(r, 2500));
         const cur = S.frame && S.frame.label;
