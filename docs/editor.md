@@ -150,7 +150,10 @@ seconds).
   through a style package's options (`\usepackage[title={...}]{mystyle}`), the
   panel shows and edits those options.
 - **Theme:** theme, colour theme and font theme (the lists are read from your
-  TeX installation and the folder), and the aspect ratio.
+  TeX installation and the folder), and the aspect ratio. If a style sets the
+  page size itself (`\geometry{paperwidth=...}`, often from its own
+  `paperwidth=`/`paperheight=` options), the aspect ratio changes it there, to
+  beamer's size for that ratio scaled like the current page.
 - **Colours:** every colour the deck defines (`\definecolor`, in the deck, its
   `\input` files or a style beside it). Changing one changes everything that
   uses it: a colour from a style file gets an override line in your preamble,

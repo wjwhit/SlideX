@@ -1361,8 +1361,11 @@ async function refreshDeckPanel() {
   const ar = el('select', {});
   for (const [v, l] of ASPECTS) ar.append(el('option', { value: v }, l));
   ar.value = i.aspect || '43';
-  ar.onchange = () => deckEdit({ kind: 'aspect', ratio: ar.value }, 'Aspect ratio');
-  th.append(el('label', { class: 'dp-row' }, el('span', { class: 'dp-lab' }, 'Aspect ratio'), el('span', { class: 'dp-in' }, ar)));
+  if (i.aspect === 'custom') { ar.append(el('option', { value: 'custom' }, `custom (${i.paper.w} × ${i.paper.h})`)); ar.value = 'custom'; }
+  ar.onchange = () => { if (ar.value !== 'custom') deckEdit({ kind: 'aspect', ratio: ar.value }, 'Aspect ratio'); };
+  const pnote = i.paper ? (i.paper.via ? `page ${i.paper.w} × ${i.paper.h}: options ${i.paper.via.wkey}= and ${i.paper.via.hkey}= of ${i.paper.via.pkg}`
+    : i.paper.main ? `page ${i.paper.w} × ${i.paper.h}: \\geometry in this file` : `page ${i.paper.w} × ${i.paper.h}, set in ${i.paper.file}; changing it here has no effect`) : null;
+  th.append(el('label', { class: 'dp-row' }, el('span', { class: 'dp-lab' }, 'Aspect ratio'), el('span', { class: 'dp-in' }, ar, pnote ? el('small', {}, pnote) : null)));
   P.append(th);
 
   // colours
