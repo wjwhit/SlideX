@@ -569,6 +569,55 @@ for (const el of [$('preview')]) {
 const FIG_RE = /\\(includegraphics|slidemovie)\s*(?:\[([^\]]*)\])?\s*\{/;
 S.figs = [];
 
+/* Where images and included PDFs are drawn on the preview page (page points
+ * from the top-left), from pdf.js's operator list. */
+async function pageImages() {
+  const key = pv.url + '#' + S.preview.page;
+  if (pv.imgs && pv.imgs.key === key) return pv.imgs.list;
+  const list = [];
+  try {
+    const page = await pv.doc.getPage(S.preview.page);
+    const vp = page.getViewport({ scale: 1 });
+    const ops = await page.getOperatorList();
+    const O = pdfjsLib.OPS;
+    const mul = (m, n) => [m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1], m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3],
+      m[0] * n[4] + m[2] * n[5] + m[4], m[1] * n[4] + m[3] * n[5] + m[5]];
+    const rectOf = (m, bb = [0, 0, 1, 1]) => {
+      const pts = [[bb[0], bb[1]], [bb[2], bb[1]], [bb[0], bb[3]], [bb[2], bb[3]]]
+        .map(([x, y]) => vp.convertToViewportPoint(m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]));
+      const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+      return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+    };
+    let ctm = [1, 0, 0, 1, 0, 0];
+    const stack = [];
+    for (let i = 0; i < ops.fnArray.length; i++) {
+      const fn = ops.fnArray[i], a = ops.argsArray[i];
+      if (fn === O.save) stack.push(ctm);
+      else if (fn === O.restore) ctm = stack.pop() || ctm;
+      else if (fn === O.transform) ctm = mul(ctm, a);
+      else if (fn === O.paintImageXObject || fn === O.paintInlineImageXObject || fn === O.paintImageMaskXObject) list.push(rectOf(ctm));
+      else if (fn === O.paintFormXObjectBegin) {
+        stack.push(ctm);
+        if (a[0]) ctm = mul(ctm, a[0]);
+        if (a[1]) { const r = rectOf(ctm, a[1]); if (r.w > 8 && r.h > 8) list.push(r); }
+      } else if (fn === O.paintFormXObjectEnd) ctm = stack.pop() || ctm;
+    }
+  } catch { /* no operator list: keep SyncTeX's boxes */ }
+  pv.imgs = { key, list };
+  return list;
+}
+
+/* SyncTeX's box for a figure can be the whole argument it sits in (a box in
+ * \visible{...}): use the drawn image it holds, when one fills it poorly. */
+function snapToImage(b, imgs) {
+  const area = (r) => r.w * r.h;
+  const overlap = (r, q) => Math.max(0, Math.min(r.x + r.w, q.x + q.w) - Math.max(r.x, q.x)) * Math.max(0, Math.min(r.y + r.h, q.y + q.h) - Math.max(r.y, q.y));
+  let best = null, bo = 0;
+  for (const im of imgs) { const o = overlap(b, im); if (o > bo && o > 0.6 * area(im)) { bo = o; best = im; } }
+  if (!best || area(best) > 0.8 * area(b)) return b;
+  return { ...b, x: best.x, y: best.y, w: best.w, h: best.h };
+}
+
 async function findFigures() {
   S.figs = [];
   drawFigs(null);
@@ -579,7 +628,7 @@ async function findFigures() {
     if (!FIG_RE.test(doc.line(l).text) || /^\s*%/.test(doc.line(l).text)) continue;
     const boxes = ((await api.boxesForLine(l)) || []).filter((b) => b.page === S.preview.page);
     if (!boxes.length) continue;
-    const b = boxes.reduce((a, c) => (c.w * c.h > a.w * a.h ? c : a));
+    const b = snapToImage(boxes.reduce((a, c) => (c.w * c.h > a.w * a.h ? c : a)), await pageImages());
     if (b.w < 4 || b.h < 4) continue;
     figs.push({ kind: 'figure', line: l, box: b });
   }
@@ -971,14 +1020,60 @@ $('preview').addEventListener('contextmenu', (e) => {
 
 /* Click: show the source line in the code (focus stays here). Double-click
  * on text: edit it in place. Figures win a click; inside boxes, text does. */
+/* The text of the slide under a point (page points from the top-left), from
+ * pdf.js: the nearest text item within a few points, or null. */
+async function textAt(x, y) {
+  try {
+    const key = pv.url + '#' + S.preview.page;
+    if (!pv.text || pv.text.key !== key) {
+      const page = await pv.doc.getPage(S.preview.page);
+      pv.text = { key, vp: page.getViewport({ scale: 1 }), tc: await page.getTextContent() };
+    }
+    const { vp, tc } = pv.text;
+    let best = null, bd = 4, box = null;
+    for (const it of tc.items) {
+      if (!it.str || !it.str.trim()) continue;
+      const h = Math.hypot(it.transform[2], it.transform[3]) || it.height || 8;
+      const [bx, by] = vp.convertToViewportPoint(it.transform[4], it.transform[5]);
+      const dx = Math.max(bx - x, 0, x - (bx + it.width)), dy = Math.max(by - h - y, 0, y - (by + 0.25 * h));
+      const d = Math.hypot(dx, dy);
+      if (d < bd) { bd = d; best = it.str; box = { x: bx, y: by - h, w: it.width, h: 1.25 * h, page: S.preview.page }; }
+    }
+    return best ? { str: best, box, d: bd } : null;
+  } catch { return null; }
+}
+
+/* SyncTeX puts everything read as one macro argument (for example a box in
+ * \visible<2->{...}) on the argument's last line. When the line it gives does
+ * not hold the words under the mouse, use the frame's line that does. */
+const wordsOf = (t) => (t.normalize('NFKC').match(/[A-Za-z][A-Za-z'-]{2,}/g) || []);
+async function refineHit(hit, x, y) {
+  const f = S.frame;
+  if (!hit || !f || hit.line < f.start || hit.line > f.end) return hit;
+  const t = await textAt(x, y);
+  const words = t ? wordsOf(t.str) : [];
+  if (!words.length) return hit;
+  const score = (l) => { const t = view.state.doc.line(l).text.replace(/^\s*%.*$/, ''); return words.filter((w) => t.includes(w)).length; };
+  if (score(hit.line) === words.length) return hit;
+  let best = null, bs = 0;
+  for (let l = f.start; l <= f.end; l++) {
+    const sc = score(l);
+    if (sc > bs || (sc === bs && sc && Math.abs(l - hit.line) < Math.abs(best - hit.line))) { bs = sc; best = l; }
+  }
+  return best && bs > score(hit.line) && bs >= Math.min(2, words.length) ? { line: best, exact: true, byText: true, box: t.box } : hit;
+}
+
 async function previewHit(e) {
   if (e.target.closest('.text-pop') || e.target.closest('.fig-handle') || !S.preview || S.stale) return null;
   const r = $('pagewrap').getBoundingClientRect();
   const x = (e.clientX - r.left) / pv.scale, y = (e.clientY - r.top) / pv.scale;
   const fig = figAt(x, y);
-  if (fig && fig.kind === 'figure') return { fig };
-  const hit = await api.lineAt(S.preview.page, x, y);
-  if (hit) return { hit };
+  if (fig && fig.kind === 'figure') {                         // text on top of a figure's area wins
+    const t = await textAt(x, y);
+    if (!t || t.d > 1) return { fig };
+  }
+  const hit = await refineHit(await api.lineAt(S.preview.page, x, y), x, y);
+  if (hit) return { hit, x, y };
   return fig ? { fig } : null;
 }
 $('preview').addEventListener('click', async (e) => {
@@ -990,7 +1085,7 @@ $('preview').addEventListener('click', async (e) => {
 $('preview').addEventListener('dblclick', async (e) => {
   const h = await previewHit(e);
   if (!h) return;
-  if (h.hit && h.hit.exact) openTextEdit(h.hit.line);
+  if (h.hit && h.hit.exact) openTextEdit(h.hit.line, h.hit.box || null);
   else gotoLine(h.fig ? h.fig.line : h.hit.line);
 });
 $('preview').addEventListener('mousemove', (e) => {
