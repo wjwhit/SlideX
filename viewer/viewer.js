@@ -586,7 +586,7 @@ function openPresenter() {
   window.open(location.pathname + '?' + p.toString(), 'slidex-presenter', 'width=1280,height=760');
 }
 
-/* desktop app: drop another PDF on the window to open it */
+/* desktop app: drop a PDF on the window to present it, a .tex to edit it */
 if (window.slidexApp) {
   addEventListener('dragover', (e) => e.preventDefault());
   addEventListener('drop', (e) => {

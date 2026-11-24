@@ -40,6 +40,18 @@ require('./log').init(app, { crashReporter, onWindowGone: (wc, d) => {
     .then(({ response }) => { if (win.isDestroyed()) return; if (response === 0) wc.reload(); else win.close(); });
 } });
 
+/* Test and screenshot runs never put a dialog on the screen: each one is
+ * logged and answered as cancelled (a closing editor's prompt has its own
+ * scripted answer in the self-test). */
+if (process.argv.includes('--selftest') || process.argv.includes('--shots')) {
+  const note = (kind, o) => log.info(`(test run) ${kind}:`, (o && (o.message || o.title)) || '');
+  dialog.showMessageBox = async (w, o) => { note('dialog', o || w); return { response: ((o || w) && (o || w).cancelId) ?? 0, checkboxChecked: false }; };
+  dialog.showMessageBoxSync = (w, o) => { note('dialog', o || w); return ((o || w) && (o || w).cancelId) ?? 0; };
+  dialog.showErrorBox = (t, c) => log.info(`(test run) error box: ${t}: ${String(c).split('\n')[0]}`);
+  dialog.showOpenDialog = async (w, o) => { note('open dialog', o || w); return { canceled: true, filePaths: [] }; };
+  dialog.showSaveDialog = async (w, o) => { note('save dialog', o || w); return { canceled: true }; };
+}
+
 /* Every IPC handler logs what it throws (the window still gets the error). */
 {
   const handle = ipcMain.handle.bind(ipcMain);
@@ -350,12 +362,25 @@ function placePresenter(audience, presenter) {
   presenter.focus();
 }
 
+/* Every way a file comes in (Open, drops, Finder, the Dock, the command
+ * line) ends here: a PDF is presented, a .tex is opened in the editor (built
+ * first if its PDF is missing or older). */
+function isWelcome(win) { return !!(win && !win.isDestroyed() && win.webContents.getURL().includes('/viewer/welcome.html')); }
+async function openPath(p, win) {
+  if (!p) return;
+  p = path.resolve(p);
+  if (/\.tex$/i.test(p)) return openSourcePath(p, win);
+  if (/\.pdf$/i.test(p)) return openDeck(p, { reuse: isWelcome(win) ? win : null });
+  log.warn('not a deck or a source:', p);
+  dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, { type: 'info', message: `SlideX opens PDF decks and LaTeX sources.`,
+    detail: `${path.basename(p)} is neither a .pdf nor a .tex file.` });
+}
 async function chooseDeck(win) {
   const r = await dialog.showOpenDialog(win || undefined, {
-    title: 'Open a slide deck', properties: ['openFile'], filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    title: 'Open a deck (PDF) or its LaTeX source', properties: ['openFile'],
+    filters: [{ name: 'Decks and sources', extensions: ['pdf', 'tex'] }, { name: 'PDF', extensions: ['pdf'] }, { name: 'LaTeX', extensions: ['tex'] }] });
   if (r.canceled || !r.filePaths.length) return;
-  const reuse = win && win.webContents.getURL().includes('/viewer/welcome.html') ? win : null;
-  openDeck(r.filePaths[0], { reuse });
+  return openPath(r.filePaths[0], win);
 }
 
 function showWelcome(opts = {}) {
@@ -403,7 +428,14 @@ async function openSourcePath(tex, win) {
       return;
     }
   }
-  const welcome = win && !win.isDestroyed() && win.webContents.getURL().includes('/viewer/welcome.html') ? win : null;
+  // the deck already open in a window: use it (reloaded if it was just built)
+  const open = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && deckOf.get(w.webContents.id) === path.resolve(pdf));
+  if (open) {
+    if (stale) reloadDeckWindows(path.resolve(pdf));
+    if (isWelcome(win)) win.close();
+    return openEditor(open);
+  }
+  const welcome = isWelcome(win) ? win : null;
   const deckWin = openDeck(pdf, { reuse: welcome });
   if (deckWin) deckWin.webContents.once('did-finish-load', () => setTimeout(() => openEditor(deckWin), 800));
 }
@@ -802,10 +834,7 @@ async function openExample(win) {
 
 ipcMain.handle('slidex:open', (e, p) => {
   const win = BrowserWindow.fromWebContents(e.sender);
-  if (p && /\.pdf$/i.test(p)) {
-    const reuse = win.webContents.getURL().includes('/viewer/welcome.html') ? win : null;
-    openDeck(p, { reuse });
-  } else chooseDeck(win);
+  return p ? openPath(p, win) : chooseDeck(win);
 });
 ipcMain.handle('slidex:exit-fullscreen', (e) => {
   const win = BrowserWindow.fromWebContents(e.sender);
@@ -902,7 +931,7 @@ function buildMenu() {
 const pending = [];
 app.on('open-file', (e, p) => {             // Finder, Dock drops (can come before ready)
   e.preventDefault();
-  if (app.isReady() && port) openDeck(p); else pending.push(p);
+  if (app.isReady() && port) openPath(p, BrowserWindow.getFocusedWindow()); else pending.push(p);
 });
 
 const selftest = process.argv.includes('--selftest');
@@ -910,7 +939,7 @@ const selftest = process.argv.includes('--selftest');
 app.whenReady().then(async () => {
   await startServer();
   buildMenu();
-  const args = process.argv.slice(app.isPackaged ? 1 : 2).filter((a) => /\.pdf$/i.test(a));
+  const args = process.argv.slice(app.isPackaged ? 1 : 2).filter((a) => /\.(pdf|tex)$/i.test(a));
   const files = [...pending, ...args];
   if (selftest) return runSelftest(files[0]);
   const si = process.argv.indexOf('--shots');
@@ -919,7 +948,7 @@ app.whenReady().then(async () => {
       editorWindowFor: (deck) => { for (const st of editors.values()) if (st.deckWin === deck) return st.win; return null; }, deckChildren, app,
       prefs: { get: (k) => getPrefs()[k], set: (k, v) => setPref(k, v, true) } });
   }
-  if (files.length) files.forEach((f) => openDeck(f));
+  if (files.length) { for (const f of files) await openPath(f); }
   else showWelcome();
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) showWelcome(); });
 });
@@ -1013,6 +1042,21 @@ async function runSelftest(pdf) {
         newWindows: BrowserWindow.getAllWindows().filter((w) => !before.has(w.id)).length, editor: !!st,
         status: st ? await st.win.webContents.executeJavaScript(`document.getElementById('status').textContent`) : null,
         editorState: st ? await st.win.webContents.executeJavaScript(`({ compiling: S.compiling, preview: !!S.preview, frames: S.frames.length, thumbs: document.querySelectorAll('#strip .thumb').length, err: (window.__err || null) })`) : null }));
+    }
+    if (process.env.SLIDEX_SELFTEST_OPENPATHS) {      // the files given, opened the way a drop on the start window would
+      const out = [];
+      for (const f of process.env.SLIDEX_SELFTEST_OPENPATHS.split(',')) {
+        const welcome = showWelcome({ hidden: true });
+        await new Promise((r) => welcome.webContents.once('did-finish-load', r));
+        const before = BrowserWindow.getAllWindows().length;
+        await welcome.webContents.executeJavaScript(`slidexApp.open(${JSON.stringify(f)})`).catch(() => {});   // the window becomes the deck
+        await new Promise((r) => setTimeout(r, 6000));
+        const decks = [...deckOf.values()].filter((p) => p === path.resolve(f.replace(/\.tex$/, '.pdf')));
+        const ed = [...editors.values()].filter((st) => st.texPath === path.resolve(f.replace(/\.pdf$/, '.tex')));
+        out.push({ file: path.basename(f), pdfExists: fs.existsSync(f.replace(/\.tex$/, '.pdf')), deckWindows: decks.length, editors: ed.length,
+          windowsAdded: BrowserWindow.getAllWindows().length - before, welcomeReused: !isWelcome(welcome) || welcome.isDestroyed() });
+      }
+      console.log('SELFTEST openpaths', JSON.stringify(out));
     }
     if (process.env.SLIDEX_SELFTEST_CHECK) console.log('SELFTEST check', JSON.stringify(checkDeck(path.resolve(pdf))));
     if (process.env.SLIDEX_SELFTEST_CRASHLOG) {      // the log: a console error, an uncaught error, a renderer crash

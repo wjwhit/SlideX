@@ -69,14 +69,30 @@ setKey('CFBundleIconFile', 'string', 'SlideX.icns');
 setKey('CFBundleShortVersionString', 'string', require('./package.json').version);
 setKey('LSApplicationCategoryType', 'string', 'public.app-category.productivity');
 try { plist(info, 'Delete :CFBundleDocumentTypes'); } catch { /* not there */ }
+// one PlistBuddy call per document type (it aborts when given too many commands at once)
+plist(info, 'Add :CFBundleDocumentTypes array');
 plist(info,
-  'Add :CFBundleDocumentTypes array',
   'Add :CFBundleDocumentTypes:0 dict',
   'Add :CFBundleDocumentTypes:0:CFBundleTypeName string PDF slide deck',
   'Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Viewer',
   'Add :CFBundleDocumentTypes:0:LSHandlerRank string Alternate',   // in "Open With", never the default
   'Add :CFBundleDocumentTypes:0:LSItemContentTypes array',
   'Add :CFBundleDocumentTypes:0:LSItemContentTypes:0 string com.adobe.pdf');
+plist(info,                                // LaTeX sources open in the editor (also "Open With" only)
+  'Add :CFBundleDocumentTypes:1 dict',
+  'Add :CFBundleDocumentTypes:1:CFBundleTypeName string LaTeX source',
+  'Add :CFBundleDocumentTypes:1:CFBundleTypeRole string Editor',
+  'Add :CFBundleDocumentTypes:1:LSHandlerRank string Alternate',
+  'Add :CFBundleDocumentTypes:1:LSItemContentTypes array',
+  'Add :CFBundleDocumentTypes:1:LSItemContentTypes:0 string org.tug.tex',
+  'Add :CFBundleDocumentTypes:1:LSItemContentTypes:1 string public.tex');
+plist(info,                                // and by extension, where no app has declared a type for .tex
+  'Add :CFBundleDocumentTypes:2 dict',
+  'Add :CFBundleDocumentTypes:2:CFBundleTypeName string LaTeX source by extension',
+  'Add :CFBundleDocumentTypes:2:CFBundleTypeRole string Editor',
+  'Add :CFBundleDocumentTypes:2:LSHandlerRank string Alternate',
+  'Add :CFBundleDocumentTypes:2:CFBundleTypeExtensions array',
+  'Add :CFBundleDocumentTypes:2:CFBundleTypeExtensions:0 string tex');
 
 // Ad-hoc signature so Apple Silicon runs the edited bundle.
 run('codesign', ['--force', '--deep', '--sign', '-', appPath]);

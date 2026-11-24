@@ -4,9 +4,10 @@
 
 SlideX can open a deck's LaTeX source next to its slides. Open a deck, then
 File > Edit Source of This Deck (Cmd-E) or **Edit** in the deck's toolbar:
-the editor opens the `.tex` with the same name as the PDF. File > Open LaTeX
-Source (Shift-Cmd-O) starts from a `.tex` instead, and builds it first if its
-PDF is missing or older.
+the editor opens the `.tex` with the same name as the PDF. Or start from the
+`.tex` itself: open it with File > Open (or Open LaTeX Source, Shift-Cmd-O),
+drop it on a SlideX window or the Dock icon, or use Finder's Open With >
+SlideX. It is built first if its PDF is missing or older.
 
 ![The editor on the example deck](images/editor.png)
 
