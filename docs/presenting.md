@@ -4,8 +4,10 @@
 
 ## Opening a deck
 
-Open a PDF with File > Open (Cmd-O), by dropping it on the window or on the
-Dock icon, or with Finder's Open With > SlideX. With nothing open, SlideX
+Open a PDF with File > Open (Cmd-O), by dropping it on a SlideX window or on
+the Dock icon, or with Finder's Open With > SlideX. The same works for a
+`.tex`: it opens in the [editor](editor.md), built first if its PDF is
+missing or older (and if its deck is already open, that window is used). With nothing open, SlideX
 shows its start window:
 
 - **Open a deck** (or drop a PDF anywhere on the window);

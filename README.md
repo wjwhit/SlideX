@@ -48,8 +48,9 @@ short update, the example deck), the example deck to try, and these docs.
 
 ## Presenting
 
-Open a PDF with File > Open (Cmd-O), by dropping it on the window or the Dock
-icon, or with Finder's "Open With > SlideX". Press `?` for all keys.
+Open a PDF with File > Open (Cmd-O), by dropping it on a window or the Dock
+icon, or with Finder's "Open With > SlideX". A `.tex` opened any of these ways
+goes to the editor (built first if needed). Press `?` for all keys.
 
 | Key | Action |
 |---|---|
