@@ -189,7 +189,9 @@ screenshots, `SLIDEX_SELFTEST_NOTES=1` checks saving notes).
 - `app/`: the Electron shell (Electron 45). `main.js` runs a small local HTTP
   server (byte ranges for video, and writes only to `*.pdf.notes.json`), opens
   windows, places the presenter window on a second display, and handles Finder
-  and Dock opens. `build.js` assembles the app bundle from the installed
+  and Dock opens. `editor.js` runs the editor's builds, `synctex.js` reads
+  SyncTeX, and `notes.js` reads and writes speaker notes as `\note{...}` in the
+  deck's `.tex`. `build.js` assembles the app bundle from the installed
   Electron; `make_dmg.sh` makes the disk image.
 - `latex/`: the `slidemovie` package and its helper script (see
   [latex/README.md](latex/README.md)).
