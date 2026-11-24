@@ -43,6 +43,9 @@ Download `SlideX-<version>-arm64.dmg` (see Releases, or build it: see Building),
 and drag SlideX to Applications. SlideX is not notarized by Apple yet, so the
 first open needs one step: System Settings > Privacy & Security > "Open Anyway".
 
+The start window has your recent decks, new decks from templates (a talk, a
+short update, the example deck), the example deck to try, and these docs.
+
 ## Presenting
 
 Open a PDF with File > Open (Cmd-O), by dropping it on the window or the Dock
@@ -130,6 +133,10 @@ building it first if its PDF is missing or older.
 - Edit menu: undo, redo, cut, copy, paste, select all, find. View menu:
   bigger, smaller and default code text size (Cmd-=, Cmd--, Cmd-0), and the
   editor theme (light, dark, or following macOS).
+- Your file is safe: one undo per action, edits made in other programs are
+  noticed (Save never overwrites them silently), unsaved edits are recovered
+  after a crash, and closing with unsaved edits asks.
+- File > Check Deck… before a talk: every movie found, readable and playable.
 - Errors and crashes are written to `~/Library/Logs/SlideX/slidex.log`
   (Help > Show Log File); a window whose page crashes offers to reload.
 - LaTeX errors are listed under the preview and marked in the code.

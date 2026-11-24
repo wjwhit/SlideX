@@ -200,6 +200,24 @@ whole-word matching.
 
 ![Find](images/find.png)
 
+## Your file is safe
+
+- **One undo per action.** A drag, a resize, an arrow-key nudge, a column
+  change, a deck setting or a note from the presenter is one edit: Cmd-Z takes
+  it back in one step, and it never merges with your typing.
+- **Edits made elsewhere.** If the `.tex` changes on disk while the editor is
+  open (another editor, `latexmk`, a sync), a clean editor reloads it. With
+  unsaved edits you are asked which to keep, and Save never overwrites a change
+  it has not seen without asking first.
+- **Unsaved edits are recovered.** A few seconds after you stop typing, your
+  unsaved text is copied to `.slidex/recovery/`. If SlideX closes before you
+  save, the editor offers it back the next time (a discarded copy stays in
+  `.slidex/backups/`).
+- **Closing asks.** Closing the editor or quitting with unsaved edits asks
+  whether to save them.
+- **Backups.** Before the first save in a session, the original file is copied
+  to `.slidex/backups/`.
+
 ## Light and dark
 
 View > Editor Theme switches the editor between light and dark, or follows

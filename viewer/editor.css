@@ -203,3 +203,12 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .dp-check { align-items: center; gap: 8px; }
 :root[data-theme="light"] #deckpanel { box-shadow: -8px 0 20px rgba(0, 0, 0, .12); }
 #right.panel-open #preview, #right.panel-open #pages, #right.panel-open #output, #right.panel-open #errors { margin-right: 380px; }
+
+/* banner: questions about the file on disk */
+#banner { position: fixed; top: 44px; left: 0; right: 0; z-index: 60; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 14px; background: #4a3b12; color: #fdf1d0; border-bottom: 1px solid #7a6220; font-size: 13px; }
+#banner span { flex: 1 1 300px; }
+#banner button { height: 26px; padding: 0 10px; border-radius: 6px; border: 1px solid #a8893a; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+#banner button.primary { background: #e0b84a; color: #2a2100; border-color: #e0b84a; }
+:root[data-theme="light"] #banner { background: #fff4d6; color: #4a3b00; border-bottom-color: #e8d28f; }
+:root[data-theme="light"] #banner button { border-color: #c9a646; }

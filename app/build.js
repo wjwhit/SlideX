@@ -39,6 +39,10 @@ for (const f of ['main.js', 'preload.js', 'editor.js', 'synctex.js', 'notes.js',
 run('ditto', [path.join(here, 'viewer'), path.join(appDir, 'viewer')]);
 fs.mkdirSync(path.join(appDir, 'latex'));
 for (const f of ['slidemovie.sty', 'slidexframes.sty']) fs.copyFileSync(path.join(here, '..', 'latex', f), path.join(appDir, 'latex', f));   // on SlideX's TeX search path
+// start screen: templates and the example deck (without build files)
+run('ditto', [path.join(here, '..', 'templates'), path.join(appDir, 'templates')]);
+fs.mkdirSync(path.join(appDir, 'example'));
+for (const f of ['demo.tex', 'demo.pdf', 'media', 'figures']) run('ditto', [path.join(here, '..', 'example', f), path.join(appDir, 'example', f)]);
 { // runtime package.json: no scripts or dev dependencies
   const pkg = require('./package.json');
   fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify(

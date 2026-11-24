@@ -1,0 +1,84 @@
+% A talk made from SlideX's "Talk" template: plain beamer, builds anywhere.
+% Change the title page, theme, colours and footer in SlideX's editor with
+% Deck... (Shift-Cmd-D). Movies: drop an mp4 or GIF on the editor.
+\documentclass[aspectratio=169]{beamer}
+\usetheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+\definecolor{accent}{HTML}{1C3456}
+\setbeamercolor{structure}{fg=accent}
+\setbeamercolor{frametitle}{fg=accent}
+\setbeamercolor{title}{fg=accent}
+
+\title{Title of the talk}
+\subtitle{Meeting or occasion}
+\author{Your name}
+\institute{Your institution}
+\date{\today}
+
+\begin{document}
+
+\begin{frame}[plain]
+	\titlepage
+\end{frame}
+
+\begin{frame}{Outline}
+	\tableofcontents
+\end{frame}
+
+\section{Motivation}
+
+\begin{frame}{Why this matters}
+	\begin{itemize}
+		\item<1-> The question, in one sentence
+		\item<2-> What was known before
+		\item<3-> What is new here
+	\end{itemize}
+\end{frame}
+
+\section{Results}
+
+\begin{frame}{A result}
+	\begin{columns}[c]
+		\column{0.55\linewidth}\centering
+		% \includegraphics[width=\linewidth]{figures/result.pdf}
+		\rule{0.9\linewidth}{0.55\linewidth}\\[1mm]
+		{\small A figure goes here: drop an image on the editor}
+		\column{0.4\linewidth}
+		\begin{itemize}
+			\item What the figure shows
+			\item What to take from it
+		\end{itemize}
+	\end{columns}
+\end{frame}
+
+\begin{frame}{Another result}
+	\begin{block}{The main point}
+		One sentence the audience should remember.
+	\end{block}
+	\vspace{4mm}
+	Supporting detail, an equation if it helps:
+	\[ E = mc^2 \]
+\end{frame}
+
+\section{Conclusions}
+
+\begin{frame}{Conclusions}
+	\begin{enumerate}
+		\item First take-away
+		\item Second take-away
+		\item What comes next
+	\end{enumerate}
+\end{frame}
+
+\appendix
+\section*{Backup}
+
+\begin{frame}[noframenumbering]{Backup: details for questions}
+	\begin{itemize}
+		\item Methods, parameters, extra figures
+	\end{itemize}
+\end{frame}
+
+\end{document}

@@ -65,6 +65,9 @@ function decoFor(v, doc) {
 }
 
 let view;
+/* Every change SlideX makes for you is one edit with its own user event, so
+ * Cmd-Z undoes it in one step and it never merges with your typing. */
+function edit(changes, kind) { view.dispatch({ changes, userEvent: 'slidex.' + kind }); }
 /* ------------------------------------------------------------- themes */
 /* Dark or light, or following macOS (View > Editor Theme); the choice is kept
  * in localStorage. The page's colours switch with data-theme on <html>. */
@@ -235,7 +238,11 @@ async function compileFrame() {
   try {
     // the cursor may sit between frames: then recompile the frame last shown
     const line = frameAt(cursorLine()) ? cursorLine() : f.start;
-    const r = await api.compileFrame(view.state.doc.toString(), line);
+    // a compile that never answers must not leave the editor stuck
+    const r = await Promise.race([api.compileFrame(view.state.doc.toString(), line),
+      new Promise((res) => setTimeout(() => res({ ok: false, timedOut: true, errors: [{ file: null, line: null,
+        message: 'LaTeX did not finish this slide in 90 s. Compile again, or see Help > Show Log File.' }] }), 90000))]);
+    if (r.timedOut) { showErrors(r.errors); status('The slide did not compile in time', 'bad'); return; }
     applyFrames(r.frames);
     showErrors(r.errors || []);
     showLog(`Slide ${r.name || ''}`, r.log, r.errors);
@@ -269,6 +276,7 @@ function onEdit() {
   S.version++;
   S.stale = true;
   setDirty(true);
+  scheduleRecovery();
   drawBoxes('cursor', []); drawBoxes('hover', []);
   if (!S.live) return;
   clearTimeout(liveTimer);
@@ -280,29 +288,100 @@ async function refreshInfo() {
   try { S.info = await api.projectInfo(view.state.doc.toString()); } catch { /* keep the last */ }
 }
 
-async function save() {
-  const r = await api.save(view.state.doc.toString());
+/* Returns true when the file was written. */
+async function save(force = false) {
+  const text = view.state.doc.toString();
+  const r = await api.save(text, force);
+  if (r.conflict) { diskConflict(() => save(true)); return false; }
   applyFrames(r.frames);
-  setDirty(false);
+  if (view.state.doc.toString() === text) setDirty(false);
   status('Saved', 'good');
   refreshInfo();
+  return true;
+}
+
+/* ------------------------------------------------- the file on disk */
+/* A bar under the toolbar for things that need an answer. */
+function showBanner(msg, buttons, kind = 'warn') {
+  let b = $('banner');
+  if (!b) { b = document.createElement('div'); b.id = 'banner'; document.body.appendChild(b); }
+  b.className = kind;
+  b.innerHTML = '';
+  b.append(Object.assign(document.createElement('span'), { textContent: msg }));
+  for (const bt of buttons) {
+    const x = document.createElement('button');
+    x.type = 'button'; x.textContent = bt.label; if (bt.primary) x.className = 'primary';
+    x.onclick = () => { hideBanner(); bt.run && bt.run(); };
+    b.append(x);
+  }
+  b.hidden = false;
+}
+function hideBanner() { const b = $('banner'); if (b) b.hidden = true; }
+
+/* The smallest change from the editor's text to t, as one edit. */
+function replaceAll(t, kind) {
+  const a = view.state.doc.toString();
+  if (a === t) return;
+  let p = 0; while (p < a.length && p < t.length && a[p] === t[p]) p++;
+  let q = 0; while (q < a.length - p && q < t.length - p && a[a.length - 1 - q] === t[t.length - 1 - q]) q++;
+  edit({ from: p, to: a.length - q, insert: t.slice(p, t.length - q) }, kind);
+}
+async function loadDisk(text) {
+  replaceAll(text, 'disk');
+  await api.acceptDisk(text);
+  setDirty(false);
+}
+function diskConflict(overwrite) {
+  showBanner(`${S.tex} was changed by another program since you opened it.`, [
+    { label: 'Save mine over it', primary: true, run: overwrite },
+    { label: 'Load the version on disk', run: async () => { const d = await fetchDisk(); if (d != null) { await loadDisk(d); status('Loaded the version on disk', 'good'); } } },
+    { label: 'Cancel' },
+  ]);
+}
+async function fetchDisk() { return api.readDisk(); }
+if (api && api.onDisk) api.onDisk(async (d) => {
+  if (d.gone) { showBanner(`${S.tex} was moved or deleted. Saving writes it again here.`, [{ label: 'OK' }]); return; }
+  if (!S.dirty) {                            // nothing of yours to lose: follow the file
+    await loadDisk(d.text);
+    status(`Reloaded: ${S.tex} changed on disk`, 'good');
+    return;
+  }
+  showBanner(`${S.tex} changed on disk while you have unsaved edits here.`, [
+    { label: 'Keep my edits', primary: true, run: () => { api.acceptDisk(d.text); status('Keeping your edits: saving will replace the version on disk'); } },
+    { label: 'Load the version on disk (lose my edits)', run: async () => { await loadDisk(d.text); status('Loaded the version on disk', 'good'); } },
+  ]);
+});
+
+/* Unsaved edits are copied to .slidex/recovery/ a few seconds after typing
+ * stops, and offered back if SlideX closes before they are saved. */
+let recTimer = 0;
+function scheduleRecovery() {
+  clearTimeout(recTimer);
+  recTimer = setTimeout(() => { if (S.dirty) api.recovery(view.state.doc.toString()); }, 2500);
 }
 
 /* Save, then build the whole deck: the presenter reloads and the slide
  * strip is redrawn. */
 /* Returns true when a deck PDF was built (it may still carry LaTeX errors). */
-async function compileDeck() {
+async function compileDeck(force = false) {
   clearTimeout(liveTimer);
   while (S.compiling) await new Promise((r) => setTimeout(r, 100));   // let a slide compile finish
   S.compiling = true;
   $('btn-deck').disabled = true;
   status('Compiling the whole deck…');
   try {
-    const r = await api.compileDeck(view.state.doc.toString());
+    const text = view.state.doc.toString();
+    const r = await api.compileDeck(text, force);
+    if (r.conflict) {
+      status('Not compiled: the file changed on disk', 'bad');
+      S.compiling = false;
+      diskConflict(() => compileDeck(true));
+      return false;
+    }
     applyFrames(r.frames);
     showLog('Deck', r.log, r.errors);
     S.pageFrames = r.pageFrames || S.pageFrames;
-    setDirty(false);
+    if (view.state.doc.toString() === text) setDirty(false);
     showErrors(r.errors || []);
     status(r.ok ? `Deck compiled in ${(r.ms / 1000).toFixed(1)} s` : `Deck: ${r.errors.length} error(s)`, r.ok ? 'good' : 'bad');
     if (r.built) await renderStrip(true);
@@ -581,7 +660,7 @@ async function dropFiles(items, atLine) {
       changes.push({ from: bd, insert: '\\usepackage{slidemovie}  % movies that play in SlideX\n' });
       r.notes.push('added \\usepackage{slidemovie}');
     }
-    view.dispatch({ changes, selection: { anchor: line.to + 1 + indent.length + snippet.length } });
+    view.dispatch({ changes, selection: { anchor: line.to + 1 + indent.length + snippet.length }, userEvent: 'slidex.drop' });
     atLine = (atLine || cursorLine()) + 1;
     status(`Added ${r.rel}` + (r.notes.length ? ' · ' + r.notes.join(', ') : ''), 'good');
   }
@@ -879,7 +958,7 @@ function resizeFigure(f, ratio) {
   const start = line.from + m.index;
   const head = '\\' + m[1];
   const oldEnd = start + m[0].length - 1;                      // up to the {
-  view.dispatch({ changes: { from: start, to: oldEnd, insert: head + optStr } });
+  edit({ from: start, to: oldEnd, insert: head + optStr }, 'resize'); itemsStale();
   status(`Resized ×${ratio.toFixed(2)} (line ${f.line})`);
 }
 
@@ -898,7 +977,7 @@ function resizeTcolorbox(f, ratio) {
   });
   if (!sized) next.push(`width=${ratio.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}\\linewidth`);
   const start = line.from + m.index;
-  view.dispatch({ changes: { from: start, to: start + m[0].length, insert: '\\begin{tcolorbox}[' + next.join(',').replace(/^,/, '') + ']' } });
+  edit({ from: start, to: start + m[0].length, insert: '\\begin{tcolorbox}[' + next.join(',').replace(/^,/, '') + ']' }, 'resize'); itemsStale();
   status(`Box width ×${ratio.toFixed(2)} (line ${f.line})`);
 }
 
@@ -912,14 +991,15 @@ function resizeMacroBox(f, ratio) {
   const w = WRAP_RE.exec(before);
   if (w) {
     const valFrom = f.at - before.length + w.index + w[0].indexOf('{', w[0].indexOf('minipage}')) + 1;
-    view.dispatch({ changes: { from: valFrom, to: valFrom + w[1].length, insert: scaleLength(w[1], ratio) } });
+    edit({ from: valFrom, to: valFrom + w[1].length, insert: scaleLength(w[1], ratio) }, 'resize');
   } else {
     const width = `${ratio.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}\\linewidth`;
-    view.dispatch({ changes: [
+    edit([
       { from: f.at, insert: `\\makebox[\\linewidth]{\\begin{minipage}{${width}}` },
       { from: f.close + 1, insert: '\\end{minipage}}' },
-    ] });
+    ], 'resize');
   }
+  itemsStale();
   status(`\\${f.name} width ×${ratio.toFixed(2)} (line ${f.line})`);
 }
 
@@ -929,7 +1009,7 @@ function resizeMacroBox(f, ratio) {
  *   - TikZ nodes placed `at (x,y)` and textpos blocks: drag anywhere; the
  *     coordinates are rewritten (units from the one-slide build's probes).
  *   - Other figures and boxes: drag up or down; a \vspace before them is
- *     added or changed (and corrected once, so the slide moves as dragged).
+ *     added or changed: a \\par\\vspace above and the same space taken away below.
  *   - Column dividers: drag to rebalance the two \column widths.
  *   - Arrow keys move the selected item (click selects; Shift: 5 mm, Alt: 0.25 mm). */
 const PT = { pt: 1, bp: 72.27 / 72, mm: 72.27 / 25.4, cm: 72.27 / 2.54, in: 72.27, pc: 12, dd: 1238 / 1157, cc: 12 * 1238 / 1157 };
@@ -999,6 +1079,10 @@ async function findMovables() {
   }
   await findColumns();
   if (S.sel) S.sel = S.figs.find((f) => f.kind === S.sel.kind && f.line === S.sel.line) || null;
+  if (S.pendingMove) {                      // arrow presses made while the slide was compiling
+    const p = S.pendingMove; S.pendingMove = null;
+    if (S.sel && S.sel.move && (p.dx || p.dy)) { moveItem(S.sel, S.sel.move.kind === 'vspace' ? 0 : p.dx, p.dy); return; }
+  }
   drawFigs(S.figHover && S.figs.includes(S.figHover) ? S.figHover : S.sel);
 }
 
@@ -1064,8 +1148,9 @@ function moveColumns(col, dxBp) {
     const at = L.from + m.index + m[0].lastIndexOf('{') + 1;
     changes.push({ from: at, to: at + m[1].length, insert: v });
   }
-  view.dispatch({ changes });
-  status(`Columns: ${lv} | ${rv}`);
+  edit(changes, 'columns');
+  itemsStale();
+  status(`Columns: ${lv} | ${rv} (Cmd-Z undoes it)`);
 }
 
 /* ---- nodes and textpos blocks */
@@ -1103,7 +1188,7 @@ function moveNode(line, dxBp, dyBp) {
     inner = (opts.length ? `[${opts.join(',')}]` : '') + m[2];
   }
   if (inner == null) return false;
-  view.dispatch({ changes: { from: n.from, to: n.to, insert: inner } });
+  edit({ from: n.from, to: n.to, insert: inner }, 'move');
   return true;
 }
 
@@ -1126,7 +1211,7 @@ function moveTextblock(line, dxBp, dyBp) {
   const nx = one(parts[0], Dx, h), ny = one(parts[1], Dy, v);
   if (nx == null || ny == null) return false;
   const at = L.from + m.index + m[0].lastIndexOf('(') + 1;
-  view.dispatch({ changes: { from: at, to: at + m[2].length, insert: `${nx},${ny}` } });
+  edit({ from: at, to: at + m[2].length, insert: `${nx},${ny}` }, 'move');
   return true;
 }
 
@@ -1149,39 +1234,38 @@ function blockEnd(f) {
   if (f.kind === 'macrobox' && f.close != null) return view.state.doc.lineAt(f.close).number;
   return f.line;
 }
-/* Change the \vspace on line `at` by dPt, or insert one there (before:
- * above line `at`, else below it). Returns lines added (+1), removed (-1). */
-function bumpVspace(at, dPt, before, indent) {
+/* The change for the \vspace on line `at` (changed by dPt, removed near 0),
+ * or for a new one there (before: above line `at`, else below it), against
+ * the document as it is now. Returns {change, lines: +1 / 0 / -1}. */
+function vspaceChange(at, dPt, before, indent) {
   const doc = view.state.doc;
   const L = doc.line(at);
   const m = VSPACE_RE.exec(L.text);
   if (m) {
     const nv = parseFloat(m[3]) + dPt / PT[m[4]];
-    if (Math.abs(nv * PT[m[4]]) < 0.15) { view.dispatch({ changes: { from: L.from, to: Math.min(L.to + 1, doc.length), insert: '' } }); return -1; }
-    view.dispatch({ changes: { from: L.from, to: L.to, insert: `${m[1]}\\vspace${m[2]}{${fmtNum(nv, Math.max(1, decimalsOf(m[3])))}${m[4]}}` } });
-    return 0;
+    if (Math.abs(nv * PT[m[4]]) < 0.15) return { change: { from: L.from, to: Math.min(L.to + 1, doc.length), insert: '' }, lines: -1 };
+    return { change: { from: L.from, to: L.to, insert: `${m[1]}\\vspace${m[2]}{${fmtNum(nv, Math.max(1, decimalsOf(m[3])))}${m[4]}}` }, lines: 0 };
   }
   const v = `${indent}\\par\\vspace{${fmtNum(dPt / PT.mm, 1)}mm}`;
-  view.dispatch({ changes: before ? { from: L.from, insert: v + '\n' } : { from: L.to, insert: '\n' + v } });
-  return 1;
+  return { change: before ? { from: L.from, insert: v + '\n' } : { from: L.to, insert: '\n' + v }, lines: 1 };
 }
 /* Move a block down by dyBp: space above it, the same space taken away below
- * it, so its column keeps its height and nothing else re-centres. Returns
- * the block's new first line. */
+ * it, so its column keeps its height and nothing else re-centres. One edit
+ * (one undo). Returns the block's new first line. */
 function nudgeVspace(f, dyBp) {
   const doc = view.state.doc;
   const dPt = dyBp * BP2PT;
   const start = blockStart(f.move.line);
-  let end = blockEnd(f);
+  const end = blockEnd(f);
   const indent = /^\s*/.exec(doc.line(start).text)[0];
-  // below first (so the lines above keep their numbers)
   const after = end + 1 <= Math.min(S.frame.end - 1, doc.lines) && VSPACE_RE.test(doc.line(end + 1).text) ? end + 1 : null;
-  if (after) bumpVspace(after, -dPt, false, indent); else bumpVspace(end, -dPt, false, indent);
+  const below = after ? vspaceChange(after, -dPt, false, indent) : vspaceChange(end, -dPt, false, indent);
   let p = start - 1;
   while (p > S.frame.start && !doc.line(p).text.trim()) p--;
-  const above = p > S.frame.start && VSPACE_RE.test(view.state.doc.line(p).text) ? p : null;
-  const added = above ? bumpVspace(above, dPt, true, indent) : bumpVspace(start, dPt, true, indent);
-  return f.line + added;
+  const abovePrev = p > S.frame.start && VSPACE_RE.test(doc.line(p).text) ? p : null;
+  const above = abovePrev ? vspaceChange(abovePrev, dPt, true, indent) : vspaceChange(start, dPt, true, indent);
+  edit([above.change, below.change], 'move');
+  return f.line + above.lines;
 }
 
 async function waitPreview(ms = 8000) {
@@ -1191,30 +1275,36 @@ async function waitPreview(ms = 8000) {
   if (S.figsReady) await S.figsReady;
 }
 
-/* Move a figure or box (f) by (dx, dy) bp on the slide. */
-async function moveItem(f, dxBp, dyBp, correct = true) {
+/* Move a figure or box (f) by (dx, dy) bp on the slide: one edit. Until the
+ * slide is compiled again the items' positions and lines are out of date, so
+ * they are dropped (moves meanwhile wait, see S.pendingMove). */
+function moveItem(f, dxBp, dyBp) {
   const mv = f.move;
-  if (!mv) return;
+  if (!mv || !f.box) return false;
+  let ok = true;
   if (mv.kind === 'node') {
-    if (!moveNode(mv.line, dxBp, dyBp)) { status('This node is placed with an expression; move it in the code.', 'bad'); return; }
-    status(`Moved the node on line ${mv.line}`);
+    ok = moveNode(mv.line, dxBp, dyBp);
+    status(ok ? `Moved the node on line ${mv.line} (Cmd-Z undoes it)` : 'This node is placed with an expression; move it in the code.', ok ? '' : 'bad');
+    if (ok) S.sel = { kind: f.kind, line: f.line };
   } else if (mv.kind === 'textblock') {
-    if (!moveTextblock(mv.line, dxBp, dyBp)) { status('This textpos block could not be moved (edit its position in the code).', 'bad'); return; }
-    status(`Moved the block on line ${mv.line}`);
+    ok = moveTextblock(mv.line, dxBp, dyBp);
+    status(ok ? `Moved the block on line ${mv.line} (Cmd-Z undoes it)` : 'This textpos block could not be moved (edit its position in the code).', ok ? '' : 'bad');
+    if (ok) S.sel = { kind: f.kind, line: f.line };
   } else {
-    if (Math.abs(dyBp) < 0.3) return;
-    const y0 = f.box.y, kind = f.kind;
+    if (Math.abs(dyBp) < 0.3) return false;
     const line = nudgeVspace(f, dyBp);
-    if (S.sel === f) S.sel = { kind, line };
-    status(`Space above line ${line}: ${dyBp > 0 ? '+' : ''}${fmtNum(dyBp / 72 * 25.4, 1)} mm`);
-    if (!correct || !S.live) return;
-    // a centred frame or column moves the block by a fraction of the space: correct once
-    await waitPreview();
-    const g = S.figs.find((x) => x.kind === kind && x.line === line);
-    if (!g) return;
-    const got = g.box.y - y0;
-    if (got * dyBp > 0 && Math.abs(got - dyBp) > 1 && Math.abs(got) > 0.5) nudgeVspace(g, dyBp * (dyBp / got - 1));
+    S.sel = { kind: f.kind, line };
+    status(`Moved ${dyBp > 0 ? 'down' : 'up'} ${fmtNum(Math.abs(dyBp) / 72 * 25.4, 1)} mm (Cmd-Z undoes it)`);
   }
+  if (ok) itemsStale();
+  return ok;
+}
+/* After an edit that moves things: forget positions until the next compile
+ * (with Live off, compile now so the handles come back). */
+function itemsStale() {
+  S.figs = []; S.cols = [];
+  drawFigs(null); colEl.hidden = true;
+  if (!S.live) compileFrame();
 }
 
 /* ---- the move grip, the column handle and the keys */
@@ -1274,14 +1364,19 @@ function colAt(x, y) { return S.cols.find((c) => Math.abs(x - c.x) < 6 && y >= c
 
 // Arrow keys move the selected item (not while typing in the code or a box)
 addEventListener('keydown', (e) => {
-  if (!S.sel || !S.sel.move || !e.key.startsWith('Arrow') || e.metaKey || e.ctrlKey) return;
+  if (!S.sel || !e.key.startsWith('Arrow') || e.metaKey || e.ctrlKey) return;
   if (view.hasFocus || !popEl.hidden || (document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName))) return;
   const step = (e.shiftKey ? 5 : e.altKey ? 0.25 : 1) / 25.4 * 72;            // mm in bp
   const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
   const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
-  if (S.sel.move.kind === 'vspace' && !dy) return;
+  if (S.sel.move && S.sel.move.kind === 'vspace' && !dy) return;
   e.preventDefault();
-  moveItem(S.sel, dx, dy, false);
+  if (!S.sel.box) {                         // the slide is being recompiled: add it to the next move
+    const p = S.pendingMove || (S.pendingMove = { dx: 0, dy: 0 });
+    p.dx += dx; p.dy += dy;
+    return;
+  }
+  moveItem(S.sel, dx, dy);
 });
 
 
@@ -1303,12 +1398,12 @@ function el(tag, attrs = {}, ...kids) {
 }
 const shortFile = (f) => f && f.replace(/\.(sty|tex)$/, '');
 
-async function deckEdit(edit, what) {
+async function deckEdit(change, what) {
   if (DP.busy) return;
   DP.busy = true;
   try {
-    const c = await api.deckEdit(view.state.doc.toString(), edit);
-    if (c) { view.dispatch({ changes: c }); status(`${what}: changed in the preamble (Cmd-Z undoes it)`); }
+    const c = await api.deckEdit(view.state.doc.toString(), change);
+    if (c) { edit(c, 'deck'); status(`${what}: changed in the preamble (Cmd-Z undoes it)`); }
     await refreshDeckPanel();
   } finally { DP.busy = false; }
 }
@@ -1463,7 +1558,7 @@ function closeTextEdit(apply) {
     const lineObj = view.state.doc.line(p.line);
     if (lineObj.text === p.original) {                         // the line did not move meanwhile
       const text = popTa.value.split('\n').map((t, i) => (i ? p.indent : '') + t).join('\n');
-      if (p.indent + text !== p.original) view.dispatch({ changes: { from: lineObj.from, to: lineObj.to, insert: p.indent + text } });
+      if (p.indent + text !== p.original) edit({ from: lineObj.from, to: lineObj.to, insert: p.indent + text }, 'text');
     }
   }
   view.focus();
@@ -1479,7 +1574,7 @@ popTa.addEventListener('keydown', (e) => {
     if (p && item && atEnd && popTa.value.trim() !== '\\item') {      // next item, edited in place too
       closeTextEdit(true);
       const at = view.state.doc.line(p.line);
-      view.dispatch({ changes: { from: at.to, insert: '\n' + p.indent + '\\item ' } });
+      edit({ from: at.to, insert: '\n' + p.indent + '\\item ' }, 'text');
       const b = p.box;
       openTextEdit(p.line + 1, { x: b.x, y: b.y + b.h + 2, w: b.w, h: b.h, page: b.page });
       popTa.setSelectionRange(popTa.value.length, popTa.value.length);
@@ -1526,7 +1621,7 @@ function addCaption(f) {
     newText = indent + '{\\small Caption}';
   }
   changes.push({ from: line.to, insert: '\n' + newText });
-  view.dispatch({ changes });
+  edit(changes, 'caption');
   const b = f.box;
   openTextEdit(f.line + 1, { x: b.x, y: b.y + b.h + 2, w: Math.max(b.w, 160), h: 12, page: b.page }, 'Caption');
 }
@@ -1758,10 +1853,17 @@ window.editorCommand = (name) => {
     const c = await api.noteChange(view.state.doc.toString(), key, note);
     if (!c) return;
     const wasDirty = S.dirty;
-    view.dispatch({ changes: c });
+    edit(c, 'note');
     if (!wasDirty) setDirty(false);
   });
   api.onShown(() => { if (S.chan) S.chan.postMessage({ type: 'hello' }); });   // back from presenting: follow the deck
+  if (init.recovery) {
+    const when = new Date(init.recovery.time).toLocaleString();
+    showBanner(`SlideX found edits to ${S.tex} that were not saved (${when}).`, [
+      { label: 'Restore them', primary: true, run: () => { replaceAll(init.recovery.text, 'recovery'); status('Restored the unsaved edits: Save keeps them, Cmd-Z undoes', 'good'); } },
+      { label: 'Discard (a copy stays in .slidex/backups)', run: () => api.discardRecovery() },
+    ]);
+  }
   const deckKey = S.pageFrames[init.deckPage];
   const start = S.frames.find((f) => frameKeyOf(f) === deckKey) || S.frames.find((f) => f.label) || S.frames[0];
   if (start) { gotoLine(start.bodyStart); await switchFrame(start, true); }

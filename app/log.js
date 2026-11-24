@@ -49,6 +49,8 @@ function init(app, { crashReporter, onWindowGone } = {}) {
   log.info(`start ${app.getName()} ${app.getVersion()} (Electron ${process.versions.electron}, ${process.platform} ${process.arch})`);
 
   process.on('uncaughtException', (err) => log.error('main process exception:', err));
+  // Asked to stop (kill, logout): its windows' processes go with it, which is not a crash
+  process.on('SIGTERM', () => { log.info('terminated (SIGTERM)'); app.exit(0); });
   process.on('unhandledRejection', (err) => log.error('main process unhandled rejection:', err instanceof Error ? err : String(err)));
 
   app.on('render-process-gone', (e, wc, d) => {
