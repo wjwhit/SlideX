@@ -30,6 +30,94 @@ const setFrame = CM.StateEffect.define();
 
 function lineDeco(cls) { return CM.Decoration.line({ class: cls }); }
 
+/* ------------------------------------------------------- spell check */
+/* Misspelled words in the prose get a red wavy underline (the system spell
+ * checker, asked word by word, for the visible part of the code). Not checked:
+ * command names, options
+ * in [...] and <...>, math, the arguments of non-prose commands (\label,
+ * \includegraphics, \begin, \usepackage, ...) and arguments that look like a
+ * key, a path or a length (label=x, figures/a.pdf, 0.5\linewidth). */
+const NONPROSE = new Set(('label ref eqref pageref autoref cref Cref cite citep citet nocite includegraphics slidemovie input include '
+  + 'usepackage RequirePackage documentclass usetheme usecolortheme usefonttheme useinnertheme useoutertheme begin end definecolor colorlet '
+  + 'setbeamercolor setbeamertemplate setbeamerfont setbeamersize usebeamercolor usebeamerfont usebeamertemplate newcommand renewcommand '
+  + 'providecommand newenvironment renewenvironment def let column hspace vspace setlength addtolength settowidth rule color url href '
+  + 'bibliography bibliographystyle hypersetup tikzset usetikzlibrary pgfplotsset graphicspath includeonlyframes newslidexframe setcounter '
+  + 'addtocounter stepcounter newcounter newlength definecolorset pgfmathsetmacro DeclareMathOperator geometry fontsize selectfont '
+  + 'texorpdfstring againframe hyperlink hypertarget lstinputlisting verbatiminput resizebox scalebox makebox framebox parbox').split(' '));
+const MATH_ENV = /\\begin\{(equation|align|alignat|gather|multline|flalign|eqnarray|displaymath|math|verbatim|lstlisting|minted)\*?\}[\s\S]*?\\end\{\1\*?\}/g;
+const misspelledMark = CM.Decoration.mark({ class: 'cm-misspelled' });
+function proseRanges(text) {
+  const out = [];
+  const add = (a, b) => { if (b > a) out.push([a, b]); };
+  const brace = (i) => { let d = 0; for (let k = i; k < text.length; k++) { const c = text[k]; if (c === '\\') { k++; continue; } if (c === '{') d++; else if (c === '}' && --d === 0) return k; } return -1; };
+  const close = (i, o, c) => { let d = 0; for (let k = i; k < text.length && k < i + 4000; k++) { if (text[k] === '\\') { k++; continue; } if (text[k] === o) d++; else if (text[k] === c && --d === 0) return k; } return -1; };
+  for (const re of [/\$\$[\s\S]*?\$\$/g, /(?<!\\)\$(?:\\.|[^$\\])*?\$/g, /\\\[[\s\S]*?\\\]/g, /\\\([\s\S]*?\\\)/g, MATH_ENV, /\\verb(.)[^\n]*?\1/g]) {
+    for (const m of text.matchAll(re)) add(m.index, m.index + m[0].length);
+  }
+  const looksLikeData = (t) => !/\s/.test(t.trim()) && /[=/.:_\\\d@#]/.test(t);
+  for (const m of text.matchAll(/\\([A-Za-z@]+)\*?|\\./g)) {
+    let p = m.index + m[0].length;
+    add(m.index, p);
+    if (!m[1]) continue;
+    const all = NONPROSE.has(m[1]);
+    for (let g = 0; g < 4; g++) {
+      let q = p;
+      while (text[q] === ' ' || text[q] === '\t') q++;
+      if (text[q] === '<' && g === 0) { const e = text.indexOf('>', q); if (e > q && e - q < 40) { add(q, e + 1); p = e + 1; g--; continue; } }
+      if (text[q] === '[') { const e = close(q, '[', ']'); if (e < 0) break; add(q, e + 1); p = e + 1; continue; }
+      if (text[q] === '{') {
+        const e = brace(q); if (e < 0) break;
+        if (all || looksLikeData(text.slice(q + 1, e))) add(q, e + 1);
+        else break;                                          // prose argument: checked, and stop here
+        p = e + 1; continue;
+      }
+      break;
+    }
+  }
+  return out;
+}
+/* LaTeX ranges of the whole text (sorted, merged), kept with the document. */
+const latexField = CM.StateField.define({
+  create: (st) => mergeRanges(proseRanges(st.doc.toString())),
+  update: (v, tr) => (tr.docChanged ? mergeRanges(proseRanges(tr.state.doc.toString())) : v),
+});
+function mergeRanges(r) {
+  r.sort((a, b) => a[0] - b[0]);
+  const out = [];
+  for (const x of r) { const l = out[out.length - 1]; if (l && x[0] <= l[1]) l[1] = Math.max(l[1], x[1]); else out.push([...x]); }
+  return out;
+}
+const spellCache = new Map();             // word -> misspelled?
+const WORD_RE = /[\p{L}][\p{L}'’]*[\p{L}]|[\p{L}]{2,}/gu;
+function spellDecorations(view) {
+  const ask = window.slidexEditor && window.slidexEditor.misspelled;
+  if (!ask) return CM.Decoration.none;
+  const latex = view.state.field(latexField);
+  const doc = view.state.doc;
+  const found = [];
+  for (const { from, to } of view.visibleRanges) {
+    const text = doc.sliceString(from, to);
+    let li = 0;
+    for (const m of text.matchAll(WORD_RE)) {
+      const a = from + m.index, b = a + m[0].length;
+      while (li < latex.length && latex[li][1] <= a) li++;
+      if (li < latex.length && latex[li][0] < b) continue;        // inside LaTeX
+      const w = m[0].replace(/[’']+$/, '');
+      if (w.length < 2 || /\d/.test(w)) continue;
+      found.push({ a, b: a + w.length, w });
+    }
+  }
+  const unknown = [...new Set(found.map((x) => x.w).filter((w) => !spellCache.has(w)))];
+  if (unknown.length) { const bad = new Set(ask(unknown)); for (const w of unknown) spellCache.set(w, bad.has(w)); }
+  const b = new CM.RangeSetBuilder();
+  for (const x of found) if (spellCache.get(x.w)) b.add(x.a, x.b, misspelledMark);
+  return b.finish();
+}
+const spellPlugin = CM.ViewPlugin.fromClass(class {
+  constructor(view) { this.decorations = spellDecorations(view); }
+  update(u) { if (u.docChanged || u.viewportChanged) this.decorations = spellDecorations(u.view); }
+}, { decorations: (v) => v.decorations });
+
 const marksField = CM.StateField.define({
   create(state) { const v = { hover: null, errors: [], frame: null }; v.deco = decoFor(v, state.doc); return v; },
   update(v, tr) {
@@ -125,7 +213,8 @@ function makeEditor(text) {
         CM.lineNumbers(), CM.highlightActiveLineGutter(), CM.history(), CM.drawSelection(),
         CM.highlightActiveLine(), CM.bracketMatching(), CM.closeBrackets(), CM.highlightSelectionMatches(),
         CM.StreamLanguage.define(CM.stex), themeComp.of(cmTheme(isLight())), CM.EditorView.lineWrapping,
-        marksField,
+        marksField, latexField, spellPlugin,
+        CM.EditorView.contentAttributes.of({ spellcheck: 'false', autocorrect: 'off', autocapitalize: 'off' }),
         CM.search({ top: true }),
         window.SlidexComplete ? SlidexComplete.extension(() => S.info) : [],
         CM.EditorView.domEventHandlers({
@@ -445,47 +534,157 @@ $('out-head').addEventListener('click', () => { $('output').classList.toggle('cl
 /* ---------------------------------------------------------- slide strip */
 /* One thumbnail per frame (its last overlay step), drawn from the full-deck
  * PDF; redrawn only after Compile deck. */
-const strip = { doc: null, items: new Map() };
+/* ------------------------------------------------------- slide strip */
+/* One thumbnail per frame, in the order of the code. The pictures come from
+ * the last full build: each built frame is remembered by its source text (and
+ * label), so a thumbnail follows its frame when frames move; a frame added or
+ * changed since shows a placeholder until the next Compile deck. */
+const strip = { doc: null, items: new Map(), byText: new Map(), byLabel: new Map(), pics: new Map(), drawn: 0 };
 
+function frameText(f) {
+  const doc = view.state.doc;
+  if (f.start > doc.lines) return '';
+  return doc.sliceString(doc.line(f.start).from, doc.line(Math.min(f.end, doc.lines)).to);
+}
+
+/* After a full build: load the deck PDF and remember which page shows which frame. */
 async function renderStrip(reload = false) {
-  const box = $('strip');
-  if (!S.deckUrl || !S.pageFrames.length) { box.innerHTML = '<div class="strip-empty">Compile deck to see the slides here.</div>'; return; }
+  if (!S.deckUrl || !S.pageFrames.length) { strip.doc = null; drawStrip(); return; }
   try {
     strip.doc = await pdfjsLib.getDocument({ url: S.deckUrl + (reload ? '?t=' + Date.now() : ''), isEvalSupported: false }).promise;
-  } catch { box.innerHTML = '<div class="strip-empty">No deck PDF yet.</div>'; return; }
+  } catch { strip.doc = null; drawStrip(); return; }
   const last = new Map();                       // key -> last page index of that frame
   S.pageFrames.forEach((k, i) => { if (k != null) last.set(k, i); });
-  box.innerHTML = '';
-  strip.items.clear();
-  let n = 0;
-  for (const [key, pageIdx] of last) {
-    n++;
-    const item = document.createElement('div');
-    item.className = 'thumb';
-    item.dataset.key = key;
-    const c = document.createElement('canvas');
-    const cap = document.createElement('div');
-    cap.className = 'cap';
-    cap.textContent = `${n}. ${key.startsWith('#') ? '' : key}`;
-    item.append(c, cap);
-    item.onclick = () => {
-      const f = S.frames.find((x) => frameKeyOf(x) === key);
-      if (f) { gotoLine(f.bodyStart); }
-    };
-    box.appendChild(item);
-    strip.items.set(key, { item, c, pageIdx });
+  strip.byText.clear(); strip.byLabel.clear(); strip.pics.clear();
+  for (const f of S.frames) {
+    const pg = last.get(frameKeyOf(f));
+    if (pg == null) continue;
+    strip.byText.set(frameText(f), pg);
+    if (f.label) strip.byLabel.set(f.label, pg);
   }
-  markStrip(S.frame);
-  for (const { c, pageIdx } of strip.items.values()) {     // draw after layout, top to bottom
-    const page = await strip.doc.getPage(pageIdx + 1);
+  drawStrip();
+}
+
+function stripPage(f) {
+  const t = strip.byText.get(frameText(f));
+  if (t != null) return t;
+  return f.label && strip.byLabel.has(f.label) ? strip.byLabel.get(f.label) : null;
+}
+
+async function stripPic(pg, w) {                 // one rendering per page, copied into each thumbnail
+  const k = pg + '@' + w;
+  if (strip.pics.has(k)) return strip.pics.get(k);
+  const pr = (async () => {
+    const page = await strip.doc.getPage(pg + 1);
     const vp1 = page.getViewport({ scale: 1 });
-    const w = box.clientWidth - 18;
     const dpr = window.devicePixelRatio || 1;
     const vp = page.getViewport({ scale: (w / vp1.width) * dpr });
+    const c = document.createElement('canvas');
     c.width = Math.round(vp.width); c.height = Math.round(vp.height);
-    c.style.width = w + 'px';
     await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    return c;
+  })();
+  strip.pics.set(k, pr);
+  return pr;
+}
+
+/* Draw the strip from the frames as they are in the code now. */
+async function drawStrip() {
+  const box = $('strip');
+  const gen = ++strip.drawn;
+  box.innerHTML = '';
+  strip.items.clear();
+  if (!S.frames.length) { box.innerHTML = '<div class="strip-empty">No frames yet.</div>'; addNewSlideButton(box); return; }
+  const w = Math.max(60, box.clientWidth - 18);
+  const ratio = strip.doc ? null : 9 / 16;
+  S.frames.forEach((f, i) => {
+    for (const sec of (f.start <= view.state.doc.lines ? sectionsBefore(i) : []).filter((x, k, all) => !(x.appendix && all[k + 1]))) {
+      const d = document.createElement('div');
+      d.className = 'strip-section' + (sec.sub ? ' sub' : '');
+      d.textContent = sec.title || '(section)';
+      d.title = `\\${sec.sub ? 'sub' : ''}section on line ${sec.line}`;
+      d.onclick = () => gotoLine(sec.line);
+      d.ondragover = (e) => { if (strip.dragFrom == null) return; e.preventDefault(); clearDropMark(); d.classList.add('drop-into'); };
+      d.ondragleave = () => d.classList.remove('drop-into');
+      d.ondrop = (e) => {
+        e.preventDefault();
+        const from = strip.dragFrom; strip.dragFrom = null; clearDropMark();
+        if (from != null) moveSlide(from, i, sec.line);          // at the start of this section
+      };
+      box.appendChild(d);
+    }
+    const item = document.createElement('div');
+    item.className = 'thumb';
+    item.dataset.index = i;
+    item.draggable = true;
+    const c = document.createElement('canvas');
+    c.style.width = w + 'px';
+    const cap = document.createElement('div');
+    cap.className = 'cap';
+    cap.textContent = `${i + 1}. ${f.label || f.title || ''}`;
+    item.append(c, cap);
+    item.onclick = () => gotoLine(f.bodyStart);
+    item.oncontextmenu = (e) => { e.preventDefault(); slideMenu(e.clientX, e.clientY, i); };
+    item.ondragstart = (e) => { strip.dragFrom = i; item.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(i)); };
+    item.ondragend = () => { item.classList.remove('dragging'); clearDropMark(); };
+    item.ondragover = (e) => {
+      if (strip.dragFrom == null) return;
+      e.preventDefault();
+      const r = item.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      clearDropMark();
+      item.classList.add(after ? 'drop-after' : 'drop-before');
+      strip.dropAt = after ? { to: i + 1, afterLine: frameBlock(f).b } : { to: i, afterLine: null };   // after this slide, or before it
+    };
+    item.ondrop = (e) => {
+      e.preventDefault();
+      const from = strip.dragFrom, d = strip.dropAt;
+      strip.dragFrom = null; clearDropMark();
+      if (from == null || !d) return;
+      if (d.afterLine != null ? d.to - 1 !== from : d.to !== from) moveSlide(from, d.to, d.afterLine);
+    };
+    box.appendChild(item);
+    strip.items.set(frameKeyOf(f), { item, c, f });
+  });
+  addNewSlideButton(box);
+  markStrip(S.frame);
+  // which page each thumbnail shows, worked out now (the text may change while pictures render)
+  const jobs = [...strip.items.values()].map(({ c, f }) => ({ c, f, pg: strip.doc ? stripPage(f) : null }));
+  for (const { c, f, pg } of jobs) {                          // pictures after layout, top to bottom
+    if (gen !== strip.drawn) return;
+    if (pg == null) { placeholderThumb(c, f, w); continue; }
+    const pic = await stripPic(pg, w);
+    if (gen !== strip.drawn) return;
+    c.width = pic.width; c.height = pic.height;
+    c.getContext('2d').drawImage(pic, 0, 0);
   }
+  void ratio;
+}
+function placeholderThumb(c, f, w) {
+  const dpr = window.devicePixelRatio || 1;
+  const h = Math.round(w * (S.preview && pv.h && pv.w ? pv.h / pv.w : 9 / 16));
+  c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+  c.style.height = h + 'px';
+  const g = c.getContext('2d');
+  g.scale(dpr, dpr);
+  g.fillStyle = '#f2f3f5'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#8b919a'; g.font = '10px -apple-system, sans-serif';
+  g.fillText((f.title || 'New slide').slice(0, 28), 6, 14);
+  g.fillText('not built yet', 6, h - 8);
+}
+function clearDropMark() { for (const x of document.querySelectorAll('#strip .drop-before, #strip .drop-after, #strip .drop-into')) x.classList.remove('drop-before', 'drop-after', 'drop-into'); }
+function addNewSlideButton(box) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'strip-new'; b.textContent = '+ New slide';
+  b.title = 'Add a slide after the current one, from a layout';
+  b.onclick = (e) => {
+    const r = b.getBoundingClientRect();
+    const at = S.frame ? S.frames.findIndex((f) => f.start === S.frame.start) : S.frames.length - 1;
+    layoutMenu(r.left, r.top, at);
+  };
+  box.appendChild(b);
+  box.ondragover = (e) => { if (strip.dragFrom != null && e.target === box) { e.preventDefault(); clearDropMark(); strip.dropAt = { to: S.frames.length, afterLine: null }; } };
+  box.ondrop = (e) => { if (e.target !== box) return; e.preventDefault(); const from = strip.dragFrom; strip.dragFrom = null; clearDropMark(); if (from != null && from !== S.frames.length - 1) moveSlide(from, S.frames.length); };
 }
 
 function markStrip(f) {
@@ -497,10 +696,185 @@ function markStrip(f) {
   }
 }
 
+/* ---- slide sorter: move, duplicate, delete, new from a layout */
+/* The structure lines between frame i-1 and frame i (\section, \subsection, \part, \appendix): {line, title}[]. */
+function sectionsBefore(i) {
+  const doc = view.state.doc;
+  const from = i > 0 ? Math.min(S.frames[i - 1].end, doc.lines) + 1 : 1, to = Math.min(S.frames[i].start, doc.lines + 1) - 1;
+  const out = [];
+  for (let l = from; l <= to; l++) {
+    const t = doc.line(l).text;
+    const m = /^\s*\\(sub)?section\*?\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}/.exec(t);
+    if (m) out.push({ line: l, title: m[2], sub: !!m[1] });
+    else if (/^\s*\\appendix\b/.test(t)) out.push({ line: l, title: 'Appendix', sub: false, appendix: true });
+    else { const p = /^\s*\\part\*?\s*\{([^}]*)\}/.exec(t); if (p) out.push({ line: l, title: p[1], sub: false }); }
+  }
+  return out;
+}
+/* A frame's block: the frame, with the comment lines right above it. */
+function frameBlock(f) {
+  const doc = view.state.doc;
+  let a = f.start;
+  while (a > 1 && /^\s*%/.test(doc.line(a - 1).text)) a--;
+  return { a, b: Math.min(f.end, doc.lines) };
+}
+function docLines() { return view.state.doc.toString().split('\n'); }
+/* Cut the block's lines out of L (and one blank line next to it). */
+function cutBlock(L, blk) {
+  const out = L.slice(blk.a - 1, blk.b);
+  let a = blk.a - 1, n = blk.b - blk.a + 1;
+  if (L[a + n] !== undefined && !L[a + n].trim() && (a === 0 || !L[a - 1].trim())) n++;
+  else if (a > 0 && !L[a - 1].trim() && (L[a + n] === undefined || !L[a + n].trim())) { a--; n++; }
+  L.splice(a, n);
+  return { out, at: a, removed: n };
+}
+/* Put block lines into L after line index `after` (-1: at the top of the frames), with blank lines around. */
+function putBlock(L, idx, block) {
+  const ins = [...block];
+  if (L[idx - 1] !== undefined && L[idx - 1].trim()) ins.unshift('');
+  if (L[idx] !== undefined && L[idx].trim()) ins.push('');
+  L.splice(idx, 0, ...ins);
+}
+async function afterSorter(msg, focusFrameText) {
+  const frames = await api.parseFrames(view.state.doc.toString());
+  applyFrames(frames);
+  drawStrip();
+  if (focusFrameText != null) {
+    const f = S.frames.find((x) => frameText(x) === focusFrameText);
+    if (f) gotoLine(f.bodyStart, false);
+  }
+  status(msg + ' (Cmd-Z undoes it)');
+}
+
+/* Move frame i so that it ends up before the frame now at index `to` (S.frames.length: last). */
+async function moveSlide(i, to, afterLine = null) {
+  const f = S.frames[i];
+  const text = frameText(f);
+  const L = docLines();
+  const blk = frameBlock(f);
+  // where it goes, in the lines before the cut
+  // directly before frame `to` (in its section), at the end, or right after a section line
+  const dest = afterLine != null ? afterLine
+    : to >= S.frames.length ? frameBlock(S.frames[S.frames.length - 1]).b : frameBlock(S.frames[to]).a - 1;
+  const cut = cutBlock(L, blk);
+  let idx = to >= S.frames.length ? dest : dest;            // a line index (0-based) to insert at
+  if (idx > blk.a - 1) idx -= cut.removed;
+  putBlock(L, idx, cut.out);
+  replaceAll(L.join('\n'), 'sorter');
+  await afterSorter(afterLine != null ? `Moved slide ${i + 1} into a section` : `Moved slide ${i + 1} to position ${to > i ? to : to + 1}`, text);
+}
+
+/* A label made unique: x -> x-2, x-3, ... */
+function uniqueLabel(base) {
+  const used = new Set(S.frames.map((f) => f.label).filter(Boolean));
+  let n = 2;
+  while (used.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+async function duplicateSlide(i) {
+  const f = S.frames[i];
+  const blk = frameBlock(f);
+  const L = docLines();
+  const copy = L.slice(blk.a - 1, blk.b);
+  if (f.label) {                                             // two frames may not share a label
+    const k = f.start - blk.a;
+    copy[k] = copy[k].replace(new RegExp(`(label\\s*=\\s*)${f.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w.-])`), `$1${uniqueLabel(f.label)}`);
+  }
+  putBlock(L, blk.b, copy);
+  replaceAll(L.join('\n'), 'sorter');
+  await afterSorter(`Duplicated slide ${i + 1}`, copy.join('\n').split('\n').slice(f.start - blk.a).join('\n'));
+}
+async function deleteSlide(i) {
+  const L = docLines();
+  cutBlock(L, frameBlock(S.frames[i]));
+  replaceAll(L.join('\n'), 'sorter');
+  await afterSorter(`Deleted slide ${i + 1}`);
+}
+
+/* New frames are written like the deck's own (\begin{frame}, \begin{sframe},
+ * a frame macro like \cframe{...}{...}{...}). */
+const LAYOUTS = [
+  ['bullets', 'Title and bullets'], ['twocol', 'Two columns'], ['figure', 'Figure with caption'],
+  ['title', 'Title only'], ['image', 'Full-slide image'], ['section', 'Section divider'], ['blank', 'Blank'],
+];
+function frameStyle() {
+  const n = new Map();
+  for (const f of S.frames) { const k = f.kind + ':' + f.name; n.set(k, (n.get(k) || 0) + 1); }
+  const top = [...n].sort((a, b) => b[1] - a[1])[0];
+  const [kind, name] = top ? top[0].split(':') : ['env', 'frame'];
+  return { kind, name: name === 'sbackup' || name === 'appendixframe' ? 'frame' : name, plainEnv: kind === 'env' && (name === 'frame' || name === 'sbackup' || name === 'appendixframe') };
+}
+function layoutBody(id, ind) {
+  const ph = (w, h, cap) => [`${ind}\\centering`, `${ind}{\\color{black!12}\\rule{${w}}{${h}}}\\\\[1mm]`, `${ind}{\\small ${cap}}`];
+  switch (id) {
+    case 'bullets': return [`${ind}\\begin{itemize}`, `${ind}\t\\item First point`, `${ind}\t\\item Second point`, `${ind}\t\\item Third point`, `${ind}\\end{itemize}`];
+    case 'twocol': return [`${ind}\\begin{columns}[c]`, `${ind}\t\\column{0.48\\linewidth}`, `${ind}\t\\begin{itemize}`, `${ind}\t\t\\item A point`, `${ind}\t\t\\item Another point`, `${ind}\t\\end{itemize}`,
+      `${ind}\t\\column{0.48\\linewidth}\\centering`, `${ind}\t{\\color{black!12}\\rule{0.9\\linewidth}{0.6\\linewidth}}\\\\[1mm]`, `${ind}\t{\\small A figure: drop an image on the editor}`, `${ind}\\end{columns}`];
+    case 'figure': return ph('0.7\\linewidth', '0.39\\linewidth', 'Caption: drop an image on the editor to replace the grey box');
+    case 'image': return [`${ind}\\begin{tikzpicture}[remember picture, overlay]`, `${ind}\t\\node at (current page.center) {{\\color{black!12}\\rule{\\paperwidth}{\\paperheight}}};`, `${ind}\\end{tikzpicture}`];
+    case 'section': return [`${ind}\\sectionpage`];
+    case 'title': return [`${ind}% content goes here`];
+    default: return [`${ind}`];
+  }
+}
+function newFrameLines(id) {
+  const st = frameStyle();
+  const title = id === 'section' || id === 'image' ? '' : 'New slide';
+  const opts = id === 'image' ? 'plain' : '';
+  let label = null;
+  if (!st.plainEnv) { const used = new Set(S.frames.map((f) => f.label)); let n = S.frames.length + 1; while (used.has('slide' + n)) n++; label = 'slide' + n; }
+  const optStr = [label ? `label=${label}` : '', opts].filter(Boolean).join(',');
+  const body = layoutBody(id, '\t');
+  let head, tail;
+  if (st.plainEnv) { head = `\\begin{frame}${optStr ? `[${optStr}]` : ''}${title ? `{${title}}` : ''}`; tail = '\\end{frame}'; }
+  else if (st.kind === 'env') { head = `\\begin{${st.name}}{${optStr}}{${title}}`; tail = `\\end{${st.name}}`; }
+  else { head = `\\${st.name}{${optStr}}{${title}}{`; tail = '}'; }
+  const out = [head, ...body, tail];
+  if (id === 'section') out.unshift('\\section{New section}', '');
+  return out;
+}
+async function newSlide(after, id) {
+  const L = docLines();
+  if (id === 'image' && !/\\usepackage(\[[^\]]*\])?\{[^}]*\btikz\b/.test(view.state.doc.toString())) {   // the layout uses TikZ
+    const d = L.findIndex((l) => /\\begin\{document\}/.test(l));
+    if (d > 0) { L.splice(d, 0, '\\usepackage{tikz}'); }
+  }
+  const idx = after >= 0 && S.frames[after] ? frameBlock(S.frames[after]).b : (S.frames.length ? frameBlock(S.frames[S.frames.length - 1]).b : L.findIndex((l) => /\\begin\{document\}/.test(l)) + 1);
+  const block = newFrameLines(id);
+  putBlock(L, idx, block);
+  replaceAll(L.join('\n'), 'sorter');
+  const head = block[block[0].startsWith('\\section') ? 2 : 0];
+  const frames = await api.parseFrames(view.state.doc.toString());
+  applyFrames(frames);
+  drawStrip();
+  const f = S.frames.find((x, k) => k > after && view.state.doc.line(x.start).text.trim() === head.trim());
+  if (f) {                                                  // put the cursor in the title (or the body) and show it
+    gotoLine(f.start);
+    const L0 = view.state.doc.line(f.start);
+    const t = L0.text.indexOf('New slide');
+    if (t >= 0) view.dispatch({ selection: { anchor: L0.from + t, head: L0.from + t + 9 } });
+  }
+  status(`New slide: ${LAYOUTS.find((x) => x[0] === id)[1]} (Cmd-Z undoes it)`);
+}
+function layoutMenu(x, y, after) {
+  showMenu(x, y, LAYOUTS.map(([id, name]) => ({ label: `New slide: ${name}`, run: () => newSlide(after, id) })));
+}
+function slideMenu(x, y, i) {
+  showMenu(x, y, [
+    { label: 'Duplicate', run: () => duplicateSlide(i) },
+    { label: 'Delete', run: () => deleteSlide(i) },
+    ...(i > 0 ? [{ label: 'Move up', run: () => moveSlide(i, i - 1) }] : []),
+    ...(i < S.frames.length - 1 ? [{ label: 'Move down', run: () => moveSlide(i, i + 2) }] : []),
+    ...LAYOUTS.map(([id, name]) => ({ label: `New slide after: ${name}`, run: () => newSlide(i, id) })),
+  ]);
+}
+
 function applyFrames(frames) {
   if (!frames) return;
+  const changed = !S.frames || S.frames.length !== frames.length || S.frames.some((f, i) => f.start !== frames[i].start || f.end !== frames[i].end || f.label !== frames[i].label);
   S.frames = frames;
   fillFramePicker();
+  if (changed && view) drawStrip();
   const f = frameAt(cursorLine());
   if (f) $('framepick').value = f.index;
 }

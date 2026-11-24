@@ -166,6 +166,20 @@ module.exports = async function shots(ctx) {
   await wait(500);
   await shot(ew, 'find');
 
+  // the slide sorter: a thumbnail's menu, then the layouts of + New slide
+  await ejs(`(() => { const c = document.querySelector('.cm-search [name=close]'); if (c) c.click(); })()`);
+  await toFrame('figure', 0);
+  await ejs(`(async () => { const t = [...document.querySelectorAll('#strip .thumb')][3]; t.scrollIntoView({ block: 'center' });
+    await new Promise((r) => setTimeout(r, 200)); const r = t.getBoundingClientRect(); slideMenu(r.left + r.width * 0.6, r.top + 20, 3); })()`);
+  await wait(300);
+  await shot(ew, 'slide-menu');
+  await ejs(`document.querySelector('.ctx-menu').hidden = true`);
+  await ejs(`(async () => { const b = document.querySelector('.strip-new'); b.scrollIntoView({ block: 'end' }); await new Promise((r) => setTimeout(r, 200));
+    const r = b.getBoundingClientRect(); layoutMenu(r.left + 10, r.top - 330, S.frames.findIndex((f) => f.label === 'figure')); })()`);
+  await wait(300);
+  await shot(ew, 'new-slide');
+  await ejs(`document.querySelector('.ctx-menu').hidden = true`);
+
   // deck settings, on the title slide
   await ejs(`(() => { const c = document.querySelector('.cm-search [name=close]'); if (c) c.click(); })()`);
   await toFrame('title', 0);

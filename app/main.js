@@ -703,6 +703,7 @@ ipcMain.handle('slidex:notesSave', async (e, page, note) => {
 ipcMain.handle('slidex-ed:deckInfo', (e, text) => deckLib.info(edState(e).texPath, text));
 ipcMain.handle('slidex-ed:deckEdit', (e, text, edit) => notesLib.change(text, deckLib.apply(edState(e).texPath, text, edit)));
 
+ipcMain.handle('slidex-ed:parseFrames', (e, text) => editor.parseFrames(text));
 ipcMain.handle('slidex-ed:noteChange', (e, text, key, note) => {
   const frame = editor.parseFrames(text).find((f) => editor.frameKey(f) === key);
   if (!frame) return null;
@@ -1042,6 +1043,34 @@ async function runSelftest(pdf) {
           const out = await ew.webContents.executeJavaScript(process.env.SLIDEX_SELFTEST_EDITJS).catch((err) => 'eval failed: ' + err.message);
           console.log('SELFTEST editjs', JSON.stringify(out));
         }
+        if (process.env.SLIDEX_SELFTEST_SPELLWORDS) {  // right-click each word: is it reported as misspelled?
+          const res = {};
+          let last = null;
+          ew.webContents.on('context-menu', (ev, p) => { last = p; });
+          ew.show(); ew.focus(); await ew.webContents.executeJavaScript('view.focus()'); await wait(2500);
+          const ses = ew.webContents.session;
+          console.log('SPELLDEBUG', JSON.stringify({ enabled: ses.isSpellCheckerEnabled(), langs: ses.getSpellCheckerLanguages ? ses.getSpellCheckerLanguages() : null,
+            attr: await ew.webContents.executeJavaScript(`view.contentDOM.getAttribute('spellcheck')`),
+            prefSpell: ew.webContents.getLastWebPreferences ? ew.webContents.getLastWebPreferences().spellcheck : 'n/a' }));
+          // type a misspelled word at the end of the title line, as a person would
+          await ew.webContents.executeJavaScript(`(() => { const i = view.state.doc.toString().indexOf('This sentense'); view.dispatch({ selection: { anchor: i } }); view.focus(); })()`);
+          ew.webContents.insertText('Typpo ');
+          await wait(1500);
+          for (const w of process.env.SLIDEX_SELFTEST_SPELLWORDS.split(',')) {
+            const at = await ew.webContents.executeJavaScript(`(() => { const i = view.state.doc.toString().indexOf(${JSON.stringify(w)}); if (i < 0) return null;
+              view.dispatch({ effects: CM.EditorView.scrollIntoView(i, { y: 'center' }) }); return true; })()`);
+            if (!at) { res[w] = 'not in the text'; continue; }
+            await wait(900);                                // scrolled into view; give the checker time
+            const at2 = await ew.webContents.executeJavaScript(`(() => { const i = view.state.doc.toString().indexOf(${JSON.stringify(w)}); const c = view.coordsAtPos(i + 1); return { x: Math.round(c.left + 2), y: Math.round((c.top + c.bottom) / 2) }; })()`);
+            last = null;
+            ew.webContents.sendInputEvent({ type: 'mouseDown', x: at2.x, y: at2.y, button: 'right', clickCount: 1 });
+            ew.webContents.sendInputEvent({ type: 'mouseUp', x: at2.x, y: at2.y, button: 'right', clickCount: 1 });
+            await wait(500);
+            res[w] = last ? (last.misspelledWord || '(ok)') : 'no menu';
+          }
+          ew.hide();
+          console.log('SELFTEST spell', JSON.stringify(res));
+        }
         if (process.env.SLIDEX_SELFTEST_EDITPNG) {     // a screenshot of the editor
           const img = await ew.webContents.capturePage();
           fs.writeFileSync(process.env.SLIDEX_SELFTEST_EDITPNG, img.toPNG());
@@ -1089,7 +1118,7 @@ async function runSelftest(pdf) {
         const line = view.state.doc.line(cursorLine());
         view.dispatch({ changes: { from: line.to, insert: ' LIVEEDIT' } });
         for (let i = 0; i < 40 && (S.stale || S.compiling); i++) await new Promise((r) => setTimeout(r, 100));
-        return { thumbs, onThumb: on && on.dataset.key, liveMs: Math.round(performance.now() - t0), stale: S.stale, status: document.getElementById('status').textContent, dirty: S.dirty };
+        return { thumbs, onThumb: on && (on.dataset.key || on.querySelector(".cap").textContent), liveMs: Math.round(performance.now() - t0), stale: S.stale, status: document.getElementById('status').textContent, dirty: S.dirty };
       })()`);
       const texAfter = fs.statSync(editors.get(ew.webContents.id).texPath).mtimeMs;
       {                                    // the Edit menu's actions on the code editor

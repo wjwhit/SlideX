@@ -15,6 +15,32 @@ last full build; click one to go there), the **source**, and the **preview**
 of the frame under the cursor, with its overlay steps above it and the LaTeX
 output below.
 
+## Slides: reorder, duplicate, add
+
+The strip on the left shows every frame, with the deck's sections above their
+first slides.
+
+- **Drag a thumbnail** to move the frame: drop on the top half of a slide to
+  put it before that slide (in its section), on the bottom half to put it
+  after, or on a section's name to put it at the start of that section. The
+  frame moves with the comment lines right above it; `\section` lines stay.
+- **Right-click a thumbnail** to duplicate it (a `label=` gets a new name, so
+  labels stay unique), delete it, move it up or down, or add a slide after it.
+
+![The menu of a thumbnail](images/slide-menu.png)
+
+- **+ New slide** under the strip adds a slide after the current one, from a
+  layout: title and bullets, two columns, figure with caption, title only,
+  full-slide image, section divider, or blank. New frames are written like the
+  deck's own: `\begin{frame}`, an environment like `sframe`, or a frame macro
+  like `\cframe{label=...}{...}{...}`. The grey boxes are placeholders: drop an
+  image on the editor to replace them.
+
+![The layouts of + New slide](images/new-slide.png)
+
+Each of these is one edit (Cmd-Z undoes it). Thumbnails come from the last
+full build; a new or changed slide shows a placeholder until Compile deck.
+
 ## One slide at a time
 
 Cmd-Enter (or **Compile slide**) compiles only the frame under the cursor,
@@ -217,6 +243,15 @@ whole-word matching.
   whether to save them.
 - **Backups.** Before the first save in a session, the original file is copied
   to `.slidex/backups/`.
+
+## Spelling
+
+Misspelled words in your text get a red wavy underline. LaTeX is not checked:
+command names, options, math, labels, file names and the arguments of commands
+like `\usepackage` or `\begin` are skipped. The words are checked by macOS's
+own spell checker, so the languages set in System Settings > Keyboard > Text
+Input > Spelling apply (with several languages, a word valid in any of them
+passes), and words you taught macOS (Learn Spelling) are not underlined.
 
 ## Light and dark
 
