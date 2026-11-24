@@ -17,7 +17,8 @@ presenter window shows the current and next slide, a timer and your notes.
   and the presenter view stays on the laptop.
 - **Laser pointer and magnifier**, driven from either window and shown on the projector.
 - **Speaker notes** typed in the presenter window, one per slide (overlay steps
-  share it), saved next to the PDF.
+  share it), saved in the deck's `.tex` as beamer `\note{...}` (or next to the
+  PDF when there is no source).
 - **beamer aware:** `show notes on second screen` decks are split automatically;
   internal links (navigation buttons, `\hyperlink`) work.
 - **Editor.** The deck's LaTeX next to its slides: one-slide compiles in about
@@ -34,7 +35,7 @@ Guides with screenshots, all made with the [example deck](example/demo.tex):
 - [Presenting](docs/presenting.md): keys, presenter window, laser, magnifier, slides panel, notes
 - [Movies and GIFs](docs/movies.md): the `slidemovie` package, options, posters, sending a deck
 - [The editor](docs/editor.md): one-slide compiles, highlighting, completion, resizing, captions, errors
-- [Frames for the editor](docs/frames.md): the `slidexframes` package
+- [Line-by-line highlighting](docs/frames.md): how the editor maps lines, and which frames it can
 
 ## Install
 
@@ -69,8 +70,12 @@ icon, or with Finder's "Open With > SlideX". Press `?` for all keys.
 The toolbar (laser, magnifier, restart movies) sits under the notes in the
 presenter window, and appears at the bottom of the projector while the mouse moves.
 
-Speaker notes are saved as `<deck>.pdf.notes.json` next to the PDF, keyed by
-beamer's frame number, so every overlay step of a slide shows the same note.
+Speaker notes are saved in the deck's `.tex`, as a beamer `\note{...}` at the
+top of the slide's frame, so every overlay step shows the same note. Beamer
+leaves notes out of the slides, so the PDF does not change, and special
+characters are escaped, so a note never breaks the build. A PDF without its
+`.tex` keeps its notes in `<deck>.pdf.notes.json`; notes found there are moved
+into the `.tex` once it exists.
 
 ## Editor mode
 
@@ -126,15 +131,12 @@ so line numbers match, frame and page counters set as in the deck), with the
 preamble precompiled. On the test deck the result is pixel-identical to the
 full build's pages.
 
-Any frame compiles on its own, with or without a `label=`. For line-by-line
-highlighting, frames must be **fragile** environments, such as `sframe` from
-the bundled [`slidexframes` package](docs/frames.md): beamer collects a normal
-frame's body before typesetting it, so SyncTeX can only point at the end of
-the frame. Other frames still compile and preview, with frame-level
-highlighting. Neither `slidexframes` nor `slidemovie` is required: a plain
-beamer deck works as it is, and `slidemovie` is only for decks with movies
-(dropping a movie on the editor adds it). SlideX puts its bundled `latex/`
-folder on `TEXINPUTS`, so both work in the editor without copying them.
+Any frame compiles on its own, with or without a `label=`, and plain
+`\begin{frame}` frames are matched to the source **line by line**: in its
+one-slide copy SlideX makes the frame fragile, so SyncTeX can follow every line
+(see [Line-by-line highlighting](docs/frames.md)). Your `.tex` stays ordinary
+beamer and builds anywhere; no package is needed. `slidemovie` is only for
+decks with movies (dropping a movie on the editor adds it).
 
 ## Building
 
@@ -200,8 +202,6 @@ screenshots, `SLIDEX_SELFTEST_NOTES=1` checks saving notes).
 
 - iPad reader: open packed talks, navigate, play movies, present to an external display.
 - Apple notarization, so the first open needs no extra step.
-- Ideas: an assisted beamer editor (fast one-slide preview, click a slide to jump
-  to its source, drag handles that rewrite sizes, drop-in movies).
 
 ## License
 

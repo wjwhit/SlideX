@@ -1,10 +1,11 @@
-% slidexframes.sty -- beamer frames that SlideX's editor can map line by line.
+% slidexframes.sty -- fragile beamer frames and backup slides (optional for SlideX).
 % Copyright (c) 2026 William White and SlideX contributors. MIT License.
 % Part of SlideX: https://github.com/wjwhit/SlideX
 %
-% Beamer collects a normal frame's body before typesetting it, so SyncTeX
-% points everything on a slide at the frame's last line. These environments
-% are fragile frames (written to a .vrb file and read back line by line), with
+% SlideX's editor does not need this package (it makes the frame being edited
+% fragile in its own copy). It is a shorthand: beamer collects a normal
+% frame's body before typesetting it, so SyncTeX points everything on a slide
+% at the frame's last line. These environments are fragile frames (written to a .vrb file and read back line by line), with
 % three fixes that keep the output identical to an ordinary frame:
 %   - each frame gets its own file \jobname-L<line>.vrb, named after its
 %     \begin line (beamer would reuse one file), so SlideX can map every line;

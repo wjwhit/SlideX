@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('slidexApp', {
   exitFullscreen: () => ipcRenderer.invoke('slidex:exit-fullscreen'),
   edit: () => ipcRenderer.invoke('slidex:edit'),
   frameGroups: () => ipcRenderer.invoke('slidex:frameGroups'),
+  notesLoad: () => ipcRenderer.invoke('slidex:notesLoad'),
+  notesSave: (page, text) => ipcRenderer.invoke('slidex:notesSave', page, text),
   pathForFile: (file) => webUtils.getPathForFile(file),
 });
 
@@ -22,4 +24,6 @@ contextBridge.exposeInMainWorld('slidexEditor', {
   pathForFile: (file) => webUtils.getPathForFile(file),
   present: (key) => ipcRenderer.invoke('slidex-ed:present', key),
   onShown: (fn) => ipcRenderer.on('slidex-ed:shown', () => fn()),
+  noteChange: (text, key, note) => ipcRenderer.invoke('slidex-ed:noteChange', text, key, note),
+  onNote: (fn) => ipcRenderer.on('slidex-ed:note', (e, d) => fn(d)),
 });

@@ -76,9 +76,25 @@ the timer and the clock. Keys work in either window, and both stay in step.
 ![Presenter window with a speaker note](images/presenter.png)
 
 Click in the notes box (or press `e`) to type a note for the slide; Esc
-leaves the box. Notes are saved as `<deck>.pdf.notes.json` next to the PDF,
-keyed by beamer's frame number, so every overlay step of a slide shows the
-same note.
+leaves the box. The note is saved in the deck's `.tex`, as a beamer
+`\note{...}` at the top of the slide's frame, so every overlay step shows the
+same note:
+
+```latex
+\begin{frame}[label=movie]{Movies play in place, and keep playing through overlays}
+	\note{Start the movie talk here. Point at the clock: it keeps running when the bullets appear.}
+	...
+```
+
+- Beamer leaves notes out of the slides (unless you ask for `show notes`), so
+  the PDF does not change.
+- A note is plain text: characters such as `%`, `$` or `#` are escaped, so
+  typing never breaks the build. Notes you wrote yourself as `\note{...}` show
+  up too.
+- If the editor is open, the note appears in its code as well, so saving the
+  editor keeps it.
+- A PDF without its `.tex` keeps notes in `<deck>.pdf.notes.json` next to it.
+  Notes found there are moved into the `.tex` when it exists.
 
 Decks made with beamer's `show notes on second screen` are split
 automatically: the slide half goes to the projector, the notes half to the

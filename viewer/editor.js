@@ -1086,6 +1086,15 @@ window.editorCommand = (name) => {
   listenDeck();
   S.version = 0;
   renderStrip();
+  // a speaker note typed in the presenter was written to the .tex: make the
+  // same change here, so a later save keeps it (and a clean buffer stays clean)
+  if (api.onNote) api.onNote(async ({ key, note }) => {
+    const c = await api.noteChange(view.state.doc.toString(), key, note);
+    if (!c) return;
+    const wasDirty = S.dirty;
+    view.dispatch({ changes: c });
+    if (!wasDirty) setDirty(false);
+  });
   api.onShown(() => { if (S.chan) S.chan.postMessage({ type: 'hello' }); });   // back from presenting: follow the deck
   const deckKey = S.pageFrames[init.deckPage];
   const start = S.frames.find((f) => frameKeyOf(f) === deckKey) || S.frames.find((f) => f.label) || S.frames[0];

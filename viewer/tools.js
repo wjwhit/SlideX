@@ -374,24 +374,55 @@ function markSlides(scroll) {
 }
 
 /* ------------------------------------------------------ speaker notes */
-const notes = { data: {}, url: PDF_URL + '.notes.json', key: null, timer: 0 };
+/* In the app, a deck with its .tex keeps notes there, as \note{...} in each
+ * frame (app/notes.js); notes.tex = {tex, pages: page -> frame index, notes}.
+ * Otherwise (no source, or the browser viewer) notes go to
+ * <deck>.pdf.notes.json, keyed by beamer's page label. Notes found in that
+ * file for a frame with a source are moved into the .tex. */
+const notes = { data: {}, url: PDF_URL + '.notes.json', key: null, page: 0, timer: 0, tex: null, json: {} };
+const appNotes = window.slidexApp && window.slidexApp.notesLoad ? window.slidexApp : null;
 
-function noteKey(i) { return pageLabels && pageLabels[i] ? 'slide ' + pageLabels[i] : 'page ' + (i + 1); }
+function pageLabel(i) { return pageLabels && pageLabels[i] ? 'slide ' + pageLabels[i] : 'page ' + (i + 1); }
+function noteKey(i) {
+  const k = notes.tex && notes.tex.pages[i];
+  return k != null && k !== undefined ? 'frame ' + k : pageLabel(i);
+}
 
 async function loadNotes() {
   try {
     const r = await fetch(notes.url, { cache: 'no-store' });
-    if (r.ok) { const j = await r.json(); notes.data = (j && j.notes) || {}; }
-  } catch { /* no notes yet */ }
+    if (r.ok) { const j = await r.json(); notes.json = (j && j.notes) || {}; }
+  } catch { /* no notes file */ }
+  notes.data = { ...notes.json };
+  if (!appNotes) return;
+  try { notes.tex = await appNotes.notesLoad(); } catch { notes.tex = null; }
+  if (!notes.tex) return;
+  for (const [k, v] of Object.entries(notes.tex.notes)) notes.data['frame ' + k] = v;
+  // move notes from the .json into the .tex
+  let moved = 0;
+  for (let i = 0; i < notes.tex.pages.length; i++) {
+    const k = notes.tex.pages[i];
+    const old = notes.json[pageLabel(i)];
+    if (k == null || !old) continue;
+    if (!notes.data['frame ' + k]) {
+      const r = await appNotes.notesSave(i, old);
+      if (!r || !r.ok) continue;
+      notes.data['frame ' + k] = old;
+    }
+    delete notes.json[pageLabel(i)];
+    moved++;
+  }
+  if (moved) await putJson();
 }
 
 function showNote(i) {
   if (MODE !== 'presenter') return;
   const key = noteKey(i);
-  $('memo-label').textContent = key;
+  $('memo-label').textContent = pageLabel(i);
   if (key === notes.key) return;                   // same frame (an overlay step): keep the text
   flushNotes();
   notes.key = key;
+  notes.page = i;
   $('memo').value = notes.data[key] || '';
 }
 
@@ -402,13 +433,25 @@ function flushNotes() {
   saveNotes();
 }
 
+async function putJson() {
+  const body = JSON.stringify({ version: 1, pdf: decodeURIComponent(PDF_URL.split('/').pop()), notes: notes.json }, null, 2);
+  const r = await fetch(notes.url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+}
+
 async function saveNotes() {
   const status = $('memo-status');
-  const body = JSON.stringify({ version: 1, pdf: decodeURIComponent(PDF_URL.split('/').pop()), notes: notes.data }, null, 2);
+  const key = notes.key, v = notes.data[key] || '';
   try {
-    const r = await fetch(notes.url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    status.textContent = 'saved';
+    if (key && key.startsWith('frame ')) {
+      const r = await appNotes.notesSave(notes.page, v);
+      if (!r || !r.ok) throw new Error((r && r.error) || 'not saved');
+      status.textContent = 'saved in ' + notes.tex.tex;
+    } else {
+      if (v) notes.json[key] = v; else delete notes.json[key];
+      await putJson();
+      status.textContent = 'saved';
+    }
     status.className = 'ok';
   } catch (err) {
     status.textContent = 'not saved (' + err.message + ')';

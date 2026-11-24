@@ -23,6 +23,11 @@ module.exports = async function shots(ctx) {
     console.log('SHOT', name, img.getSize().width + 'x' + img.getSize().height);
   }
 
+  // the source, put back exactly at the end (the presenter moves .json notes into it)
+  const texPath = pdf.replace(/\.pdf$/i, '.tex');
+  const texOrig = fs.existsSync(texPath) ? fs.readFileSync(texPath, 'utf8') : null;
+  // a full build first: the slide strip and page numbers come from it
+  if (texOrig != null) await require('./editor').compileDeck(texPath);
   // speaker notes for the presenter shot (example/*.notes.json is not committed)
   fs.writeFileSync(pdf + '.notes.json', JSON.stringify({ version: 1, notes: {
     'slide 2': 'Start the movie talk here. Point at the clock: it keeps running when the bullets appear.',
@@ -158,6 +163,7 @@ module.exports = async function shots(ctx) {
   await shot(ew, 'find');
 
   fs.rmSync(pdf + '.notes.json', { force: true });
+  if (texOrig != null && fs.readFileSync(texPath, 'utf8') !== texOrig) fs.writeFileSync(texPath, texOrig);
   console.log('SHOTS done:', saved.length);
   app.quit();
 };

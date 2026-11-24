@@ -18,7 +18,7 @@ From the example deck's second slide:
 ```latex
 \usepackage{slidemovie}
 ...
-\begin{sframe}{label=movie}{Movies play in place, and keep playing through overlays}
+\begin{frame}[label=movie]{Movies play in place, and keep playing through overlays}
 	\begin{columns}[c]
 		\column{0.56\linewidth}
 		\slidemovie[width=\linewidth]{media/clock.mp4}
@@ -29,7 +29,7 @@ From the example deck's second slide:
 			\item<3-> Hover the movie for a scrub bar
 		\end{itemize}
 	\end{columns}
-\end{sframe}
+\end{frame}
 ```
 
 ![The movie slide in SlideX](images/present-movie.png)
