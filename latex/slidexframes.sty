@@ -1,0 +1,61 @@
+% slidexframes.sty -- beamer frames that SlideX's editor can map line by line.
+% Copyright (c) 2026 William White and SlideX contributors. MIT License.
+% Part of SlideX: https://github.com/wjwhit/SlideX
+%
+% Beamer collects a normal frame's body before typesetting it, so SyncTeX
+% points everything on a slide at the frame's last line. These environments
+% are fragile frames (written to a .vrb file and read back line by line), with
+% three fixes that keep the output identical to an ordinary frame:
+%   - each frame gets its own file \jobname-L<line>.vrb, named after its
+%     \begin line (beamer would reuse one file), so SlideX can map every line;
+%   - a mark after the title makes beamer copy the body verbatim from the
+%     \begin line (otherwise leading comment lines are dropped);
+%   - the body's last paragraph ends before the frame's group closes.
+%
+%   \begin{sframe}{<frame options>}{<title>}  ...  \end{sframe}
+%   \begin{sbackup}{<frame options>}{<title>} ...  \end{sbackup}
+%       a backup slide: not counted in the frame numbers; the first one starts
+%       the appendix (\appendix and \section*{Appendix}), so put them last.
+%   \newslidexframe{<name>}{<extra frame options>}
+%       defines your own environment of this kind, e.g.
+%       \newslidexframe{cframe}{} or \newslidexframe{wideframe}{plain}
+%
+% Rules: the title goes on the \begin line, with nothing after it there;
+% \end{sframe} stands alone on its line. Labels are optional (SlideX names a
+% frame without one by its position).
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{slidexframes}[2026/11/23 v1.0 Fragile beamer frames for the SlideX editor]
+\RequirePackage{etoolbox}
+
+\makeatletter
+\patchcmd{\beamer@doexternalframe}
+  {\jobname\ifx\beamer@againname\@empty\else.\insertframenumber\fi.vrb}
+  {\jobname-L\the\inputlineno.vrb}{}
+  {\PackageWarningNoLine{slidexframes}{Could not patch beamer's .vrb file name;
+   SlideX will highlight frame by frame only}}
+\newcommand{\slidexmark}{}
+\newcommand{\slidex@endbody}{\ifhmode\par\fi}
+
+\newcommand{\newslidexframe}[2]{%
+  \newenvironment{#1}[2]{%
+    \begin{frame}[environment=#1,fragile,#2,##1]{##2}\slidexmark
+  }{\slidex@endbody\end{frame}}}
+
+\newslidexframe{sframe}{}
+
+\newif\ifslidex@appendix
+\newenvironment{sbackup}[2]{%
+  \begin{frame}[environment=sbackup,fragile,#1,noframenumbering]{#2}\slidexmark
+}{\slidex@endbody\end{frame}}
+\AddToHook{env/sbackup/before}{%
+  \ifslidex@appendix\else
+    \global\slidex@appendixtrue
+    \appendix
+    \section*{Appendix}%
+  \fi}
+
+% Optional: build one frame by hand by putting \includeonlyframes{<label>} in
+% \jobname.slidexonly (SlideX itself compiles a one-slide copy instead).
+\AddToHook{begindocument/before}{\InputIfFileExists{\jobname.slidexonly}{}{}}
+\makeatother
+\endinput

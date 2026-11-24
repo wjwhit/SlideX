@@ -1,9 +1,10 @@
 // SlideX editor mode, main-process side: the deck's LaTeX source, its frames,
 // single-frame and full compiles, LaTeX errors, backups, and SyncTeX lookups.
 //
-// Single-frame compiles use beamer's \includeonlyframes{label} on the real
-// deck (so sections, headline and numbering stay right), with the jobname
-// `<deck>.slidex-<label>` and all outputs in `<deck folder>/.slidex/`.
+// Single-frame compiles use a one-slide copy of the deck (see oneSlideSource:
+// other frames blanked, counters set, the full build's .aux copied, so sections,
+// headline and numbering stay right), with the jobname `<deck>.slidex-<label>`
+// (`_frame<n>` for a frame without a label) and outputs in `<deck folder>/.slidex/`.
 // Frames should be fragile environments (\begin{frame}[fragile], or
 // environments built with beamer's `environment=` option and `fragile`): then
 // beamer writes each body to a .vrb file and SyncTeX records every line,
@@ -18,12 +19,17 @@ try { synctexLib = require('./synctex'); } catch { /* added by the synctex modul
 
 const TEX_PATHS = ['/Library/TeX/texbin', '/usr/local/texlive/2024/bin/universal-darwin',
   '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
-const ENV = { ...process.env, PATH: [...TEX_PATHS, process.env.PATH || ''].join(':') };
+/* SlideX's own LaTeX packages (slidemovie, slidexframes) are on the search
+ * path, bundled in the app (latex/) or in the repository (../latex), for decks
+ * that use them; neither is required. */
+const BUNDLED_TEX = [path.join(__dirname, 'latex'), path.join(__dirname, '..', 'latex')].find((d) => fs.existsSync(path.join(d, 'slidemovie.sty')));
+const ENV = { ...process.env, PATH: [...TEX_PATHS, process.env.PATH || ''].join(':'),
+  TEXINPUTS: (process.env.TEXINPUTS ? process.env.TEXINPUTS.replace(/:*$/, ':') : '') + (BUNDLED_TEX ? BUNDLED_TEX + ':' : '') };
 
 /* Frame-like environments and macros. Environments may be fragile; macros
  * (\cframe{opts}{title}{body}) can be edited and compiled, but SyncTeX can
  * only point at their closing brace. */
-const FRAME_ENVS = ['frame', 'cframe', 'appendixframe'];
+const FRAME_ENVS = ['frame', 'cframe', 'appendixframe', 'sframe', 'sbackup'];   // plus \newslidexframe{name} ones
 const FRAME_MACROS = ['cframe', 'appendixframe'];
 
 /* ------------------------------------------------------------- source */
@@ -60,7 +66,8 @@ function parseFrames(text) {
   // blank out comments (keep length) so matches inside them are ignored
   const clean = text.replace(/(^|[^\\])%[^\n]*/g, (m, p) => p + ' '.repeat(m.length - p.length));
   const frames = [];
-  const envRe = new RegExp(String.raw`\\begin\{(${FRAME_ENVS.join('|')})\}`, 'g');
+  const envs = [...FRAME_ENVS, ...[...clean.matchAll(/\\newslidexframe\{([A-Za-z]+)\}/g)].map((m) => m[1])];
+  const envRe = new RegExp(String.raw`\\begin\{(${envs.join('|')})\}`, 'g');
   let m;
   while ((m = envRe.exec(clean))) {
     const name = m[1];
@@ -235,7 +242,7 @@ async function ensureFormat(texPath, text) {
 }
 
 function isNumbered(f, lines) {
-  return !(f.name === 'appendixframe' || /noframenumbering/.test(lines[f.start - 1] || ''));
+  return !(f.name === 'appendixframe' || f.name === 'sbackup' || /noframenumbering/.test(lines[f.start - 1] || ''));
 }
 
 /* The one-slide source: same line numbers as `text`. */
@@ -256,14 +263,11 @@ function oneSlideSource(text, frames, frame, firstPage) {
  * page in the full deck, for the page counter; null if unknown). */
 async function compileFrame(texPath, frame, text, opts = {}) {
   if (!frame) return { ok: false, errors: [{ file: null, line: null, message: 'The cursor is not inside a frame.' }] };
-  if (!frame.label) {
-    return { ok: false, errors: [{ file: null, line: frame.start,
-      message: 'This frame has no label, so it cannot be compiled on its own. Add label=name to its options.' }] };
-  }
   const dir = path.dirname(texPath);
   const bdir = buildDir(texPath);
   fs.mkdirSync(bdir, { recursive: true });
-  const job = `${deckBase(texPath)}.slidex-${frame.label.replace(/[^\w.-]/g, '_')}`;
+  // unlabelled frames are named by position (the cache is cleared on every compile)
+  const job = `${deckBase(texPath)}.slidex-${frame.label ? frame.label.replace(/[^\w.-]/g, '_') : '_frame' + (frame.index + 1)}`;
   const frames = opts.frames || parseFrames(text);
   const srcPath = path.join(bdir, `${job}.tex`);
   fs.writeFileSync(srcPath, oneSlideSource(text, frames, frame, opts.firstPage));
@@ -281,7 +285,7 @@ async function compileFrame(texPath, frame, text, opts = {}) {
   const log = safeRead(path.join(bdir, `${job}.log`)) || r.out;
   const errors = parseLog(log);
   return { ok: r.code === 0 && fs.existsSync(pdf), pdf: fs.existsSync(pdf) ? pdf : null, srcPath,
-    synctex: path.join(bdir, `${job}.synctex.gz`), job, errors, ms: r.ms, label: frame.label, fmt: !!fmt, log };
+    synctex: path.join(bdir, `${job}.synctex.gz`), job, errors, ms: r.ms, key: frameKey(frame), name: frameName(frame), fmt: !!fmt, log };
 }
 
 /* Full deck from the file on disk, built in .slidex/ (so the .aux, .log,
@@ -399,6 +403,7 @@ async function pageFrames(texPath, frames) {
 }
 
 function frameKey(f) { return f.label || '#' + f.index; }
+function frameName(f) { return f.label || `frame ${f.index + 1}`; }
 
 /* ---------------------------------------------------------- completion */
 /* Files under the deck's folder that \includegraphics, \slidemovie and

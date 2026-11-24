@@ -1,0 +1,85 @@
+# Presenting
+
+[Documentation](README.md) > Presenting
+
+## Opening a deck
+
+Open a PDF with File > Open (Cmd-O), by dropping it on the window or on the
+Dock icon, or with Finder's Open With > SlideX. With nothing open, SlideX
+shows its welcome window: drop a PDF on it or click Open PDF.
+
+![Welcome window](images/welcome.png)
+
+Press `f` for full screen. With a projector connected, press `s` for the
+presenter window: the slides go full screen on the projector and the
+presenter view stays on the laptop. Press `?` at any time for every key.
+
+| Key | Action |
+|---|---|
+| → ↓ Space PgDn Enter n | next page (clickers send PgDn) |
+| ← ↑ PgUp Backspace p | previous page |
+| Home / End, *number* Enter | jump |
+| f | full screen |
+| s | presenter window |
+| l | laser pointer |
+| m | magnifier; scroll to change its power |
+| e | type speaker notes (presenter window); Esc leaves the box |
+| click a movie, k | pause or play; a finished clip replays |
+| [ / ] | step movies one frame back or forward |
+| r | restart this slide's movies |
+| b or . / w | black or white screen |
+| t | reset the timer |
+| Esc | turn off the laser or magnifier, close the help; otherwise leave full screen |
+
+## Movies on the slide
+
+Movies placed with the [`slidemovie` package](movies.md) play exactly where
+they sit on the slide. On the example deck's second slide the clock keeps
+running while the bullets appear one by one: an overlay step does not restart
+a movie. Hover a movie for its scrub bar; click it (or press `k`) to pause.
+
+![A movie playing on the slide, with its scrub bar](images/present-movie.png)
+
+Every other PDF viewer shows a still frame in the same place, so the PDF
+still works when you send it to someone without SlideX.
+
+The toolbar at the bottom appears while the mouse moves and fades when it
+stops. It holds the laser, the magnifier, Restart movies, the Slides panel,
+the presenter window, and Edit (which opens the deck's source in the
+[editor](editor.md)).
+
+## Slides panel
+
+**Slides** in the toolbar shows a thumbnail of every slide. Click one to go
+there; Esc closes the panel.
+
+![The slides panel](images/slides-panel.png)
+
+## Laser pointer and magnifier
+
+`l` turns the mouse into a laser dot with a short fading tail. It shows on
+the projector too, whichever window you point in.
+
+![Laser pointer](images/laser.png)
+
+`m` turns on the magnifier: a round lens that redraws the slide sharply at
+higher zoom, movies included. Scroll to change its power.
+
+![Magnifier over the figure](images/magnifier.png)
+
+## Presenter window
+
+`s` (or **Presenter** in the toolbar) opens the presenter window: the current
+slide, live, with its movies; the next slide; your notes; the slide number,
+the timer and the clock. Keys work in either window, and both stay in step.
+
+![Presenter window with a speaker note](images/presenter.png)
+
+Click in the notes box (or press `e`) to type a note for the slide; Esc
+leaves the box. Notes are saved as `<deck>.pdf.notes.json` next to the PDF,
+keyed by beamer's frame number, so every overlay step of a slide shows the
+same note.
+
+Decks made with beamer's `show notes on second screen` are split
+automatically: the slide half goes to the projector, the notes half to the
+presenter window.

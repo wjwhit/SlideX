@@ -22,3 +22,7 @@ app/viewer/
 __pycache__/
 .DS_Store
 tools/codemirror/node_modules/
+
+# fragile-frame side files and SlideX's build folder
+*.vrb
+.slidex/

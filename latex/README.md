@@ -76,29 +76,21 @@ folder (`../figures/...`), pass `--root` with a folder that holds both.
 The editor highlights source lines on the slide through SyncTeX, which only
 works line by line inside **fragile** frames: beamer collects a normal frame's
 body (or a macro argument like `\myframe{label}{title}{body}`) before typesetting
-it, so everything maps to the frame's last line. These environments keep the
-usual look and add what the editor needs; they were checked to give a
-pixel-identical deck:
+it, so everything maps to the frame's last line. `slidexframes.sty`, in this
+folder, provides fragile frames that keep the usual look and add what the
+editor needs; they were checked to give a pixel-identical deck:
 
 ```latex
-\makeatletter
-% one .vrb file per frame, named after the \begin line (<job>-L<line>.vrb)
-\patchcmd{\beamer@doexternalframe}{\jobname\ifx\beamer@againname\@empty\else.\insertframenumber\fi.vrb}
-  {\jobname-L\the\inputlineno.vrb}{}{\PackageWarningNoLine{slidex}{Could not patch beamer's .vrb file name}}
-\newcommand{\slidexmark}{}        % keeps beamer copying the body verbatim from the \begin line
-\newcommand{\slidex@endbody}{\ifhmode\par\fi}
-\newenvironment{cframe}[2]{%      \begin{cframe}{label=name}{Title} ... \end{cframe}
-  \begin{frame}[environment=cframe,fragile,#1]{#2}\slidexmark
-}{\slidex@endbody\end{frame}}
-% single-slide compiles: SlideX writes \includeonlyframes{label} to <job>.slidexonly
-\AddToHook{begindocument/before}{\InputIfFileExists{\jobname.slidexonly}{}{}}
-\makeatother
+\usepackage{slidexframes}
+\begin{sframe}{label=name}{Title}  ...  \end{sframe}    % a frame; options and label optional
+\begin{sbackup}{}{Title}           ...  \end{sbackup}   % a backup slide, unnumbered, in the appendix
+\newslidexframe{wideframe}{plain}                       % your own kind
 ```
 
-Rules: `\end{cframe}` alone on its line; the title on the `\begin` line; give
-every frame a `label=` so it can be compiled on its own. Plain
-`\begin{frame}[fragile]` frames also compile and preview, with frame-level
-highlighting.
+Rules: `\end{sframe}` alone on its line; the title on the `\begin` line.
+Plain `\begin{frame}[fragile]` frames also compile and preview, with
+frame-level highlighting. See [docs/frames.md](../docs/frames.md) for what the
+package changes.
 
 ## Why not `animate`, `media9` or `multimedia`?
 
