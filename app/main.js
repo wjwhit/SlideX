@@ -8,6 +8,7 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell, crashReporter } = require('electron');
 const editor = require('./editor');
 const notesLib = require('./notes');
+const deckLib = require('./deck');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -553,6 +554,11 @@ ipcMain.handle('slidex:notesSave', async (e, page, note) => {
   } catch (err) { return { ok: false, error: err.message }; }
 });
 
+/* Deck settings panel (app/deck.js): read from the editor's text, and one
+ * edit at a time returned as a change for the editor to apply. */
+ipcMain.handle('slidex-ed:deckInfo', (e, text) => deckLib.info(edState(e).texPath, text));
+ipcMain.handle('slidex-ed:deckEdit', (e, text, edit) => notesLib.change(text, deckLib.apply(edState(e).texPath, text, edit)));
+
 ipcMain.handle('slidex-ed:noteChange', (e, text, key, note) => {
   const frame = editor.parseFrames(text).find((f) => editor.frameKey(f) === key);
   if (!frame) return null;
@@ -610,7 +616,7 @@ function editCommand(w, name) {
   if (!w) return;
   const wc = w.webContents;
   if (editors.has(wc.id)) { wc.executeJavaScript(`window.editorCommand && editorCommand(${JSON.stringify(name)})`).catch(() => {}); return; }
-  if (/^(font|theme)/.test(name)) return;             // code text size and theme: editor windows only
+  if (/^(font|theme|deck)/.test(name)) return;             // code text size and theme: editor windows only
   if (name === 'undo') wc.undo();
   else if (name === 'redo') wc.redo();
   else if (name === 'selectAll') wc.selectAll();
@@ -648,6 +654,7 @@ function buildMenu() {
       { label: 'Bigger Code Text', accelerator: 'CmdOrCtrl+=', click: (_, w) => editCommand(w, 'fontBigger') },
       { label: 'Smaller Code Text', accelerator: 'CmdOrCtrl+-', click: (_, w) => editCommand(w, 'fontSmaller') },
       { label: 'Default Code Text Size', accelerator: 'CmdOrCtrl+0', click: (_, w) => editCommand(w, 'fontReset') },
+      { label: 'Deck Settings', accelerator: 'Shift+CmdOrCtrl+D', click: (_, w) => editCommand(w, 'deckSettings') },
       { label: 'Editor Theme', submenu: [
         { label: 'Follow macOS', click: () => themeAll('system') },
         { label: 'Light', click: () => themeAll('light') },

@@ -16,6 +16,7 @@
   <span class="sep"></span>
   <button type="button" id="btn-save" title="Save the .tex (Cmd-S)">Save</button>
   <button type="button" id="btn-deck" title="Save, compile the whole deck, reload the presenter and the slide strip (Shift-Cmd-Enter)">Compile deck</button>
+  <button type="button" id="btn-settings" title="Title page, theme, colours, header and footer (Shift-Cmd-D)">Deck…</button>
   <span id="status"></span>
   <button type="button" id="btn-compile-present" title="Save, compile the whole deck, then present from this slide">Compile &amp; Present</button>
   <button type="button" id="btn-present" title="Present the deck as last compiled, from this slide (Edit or Cmd-E in the deck switches back)">Present ▶</button>
@@ -26,6 +27,7 @@
   <div id="divider" title="Drag to resize"></div>
   <section id="right">
     <div id="pages"></div>
+    <aside id="deckpanel" hidden></aside>
     <div id="preview"><div id="pagewrap"><canvas id="pagecanvas"></canvas><div id="marks"></div></div>
       <div id="placeholder">Put the cursor in a frame to see it here.</div></div>
     <div id="errors" hidden></div>

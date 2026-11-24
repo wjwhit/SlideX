@@ -794,6 +794,7 @@ function placeBox(el, b) {
   Object.assign(el.style, { left: b.x * pv.scale + 'px', top: b.y * pv.scale + 'px', width: b.w * pv.scale + 'px', height: b.h * pv.scale + 'px' });
 }
 function drawFigs(f) {
+  if (f && !f.box) f = null;                 // a selection waiting for the next compile to find it again
   S.figHover = f;
   figEl.hidden = !f;
   if (f) {
@@ -1283,6 +1284,143 @@ addEventListener('keydown', (e) => {
   moveItem(S.sel, dx, dy, false);
 });
 
+
+/* ------------------------------------------------------- deck settings */
+/* Title page, theme, colours, header and footer (app/deck.js reads and
+ * edits; every edit goes into the code here, so Cmd-Z undoes it and Live
+ * previews it; a preamble change rebuilds the precompiled preamble once). */
+const DP = { open: false, info: null, busy: false };
+const ASPECTS = [['169', '16:9'], ['1610', '16:10'], ['149', '14:9'], ['43', '4:3 (beamer default)'], ['54', '5:4'], ['32', '3:2']];
+const FOOTS = [['default', 'Theme default'], ['none', 'None'], ['number', 'Frame number'], ['authortitle', 'Author · title · n / N']];
+const FIELD_LABEL = { title: 'Title', subtitle: 'Subtitle', author: 'Author', institute: 'Institute', date: 'Date' };
+const SHORT_OK = { title: 1, author: 1, institute: 1, date: 1 };
+
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e[k] = v; else if (v != null) e.setAttribute(k, v); }
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+}
+const shortFile = (f) => f && f.replace(/\.(sty|tex)$/, '');
+
+async function deckEdit(edit, what) {
+  if (DP.busy) return;
+  DP.busy = true;
+  try {
+    const c = await api.deckEdit(view.state.doc.toString(), edit);
+    if (c) { view.dispatch({ changes: c }); status(`${what}: changed in the preamble (Cmd-Z undoes it)`); }
+    await refreshDeckPanel();
+  } finally { DP.busy = false; }
+}
+
+function toggleDeckPanel(open = !DP.open) {
+  DP.open = open;
+  $('deckpanel').hidden = !open;
+  $('btn-settings').classList.toggle('on', open);
+  $('right').classList.toggle('panel-open', open);           // the slide shrinks beside the panel
+  if (S.preview) renderPage().then(() => { drawCursorBoxes(); S.figsReady = findFigures(); });
+  if (open) refreshDeckPanel();
+}
+
+async function refreshDeckPanel() {
+  if (!DP.open) return;
+  const i = DP.info = await api.deckInfo(view.state.doc.toString());
+  const P = $('deckpanel');
+  const keep = P.scrollTop;
+  P.innerHTML = '';
+  P.append(el('div', { class: 'dp-head' }, el('b', {}, 'Deck settings'),
+    el('button', { type: 'button', class: 'dp-x', title: 'Close (Shift-Cmd-D)', onclick: () => toggleDeckPanel(false) }, '×')));
+
+  // title page
+  const tf = el('section', { class: 'dp-sec' }, el('h4', {}, 'Title page'));
+  const titleFrame = S.frames.find((f) => { const t = view.state.doc.sliceString(view.state.doc.line(f.start).from, view.state.doc.line(Math.min(f.end, view.state.doc.lines)).to); return /\\(titlepage|maketitle)\b/.test(t); });
+  if (titleFrame) tf.append(el('button', { type: 'button', class: 'dp-link', onclick: () => gotoLine(titleFrame.bodyStart, false) }, 'Show the title slide'));
+  for (const f of Object.keys(FIELD_LABEL)) {
+    const v = i.fields[f] || {};
+    const long = el('input', { type: 'text', value: v.long ?? '', placeholder: f === 'date' ? '\\today, or leave empty' : '' });
+    const short = SHORT_OK[f] && (v.short != null || v.viaShort || !v.via) ? el('input', { type: 'text', class: 'dp-short', value: v.short ?? '', placeholder: 'short form (footline)' }) : null;
+    const send = () => deckEdit({ kind: 'field', field: f, long: long.value, short: short ? short.value || null : v.short, via: v.via, viaShort: v.viaShort }, FIELD_LABEL[f]);
+    for (const inp of [long, short]) if (inp) { inp.onchange = send; inp.onkeydown = (e) => { if (e.key === 'Enter') inp.blur(); }; }
+    const note = v.via ? `option ${v.via.key}= of ${v.via.pkg}` : v.file && !v.main ? `from ${v.file}; editing adds it to this file` : null;
+    tf.append(el('label', { class: 'dp-row' }, el('span', { class: 'dp-lab' }, FIELD_LABEL[f]), el('span', { class: 'dp-in' }, long, short, note ? el('small', {}, note) : null)));
+  }
+  P.append(tf);
+
+  // themes
+  const th = el('section', { class: 'dp-sec' }, el('h4', {}, 'Theme'));
+  for (const [k, lab, list] of [['theme', 'Theme', i.installed.theme], ['colortheme', 'Colour theme', i.installed.color], ['fonttheme', 'Font theme', i.installed.font]]) {
+    const cur = i.themes[k];
+    const sel = el('select', {}, el('option', { value: '' }, '(beamer default)'));
+    const names = [...new Set([...(cur && cur.name ? [cur.name] : []), ...list])];
+    for (const n of names) sel.append(el('option', { value: n }, n));
+    sel.value = cur ? cur.name : '';
+    sel.onchange = () => deckEdit({ kind: 'theme', which: k, name: sel.value || null, via: cur && cur.via, after: cur && !cur.main && !cur.via ? cur.file : null }, lab);
+    const note = cur && cur.via ? `option ${cur.via.key}= of ${cur.via.pkg}` : cur && !cur.main ? `set in ${cur.file}` : null;
+    th.append(el('label', { class: 'dp-row' }, el('span', { class: 'dp-lab' }, lab), el('span', { class: 'dp-in' }, sel, note ? el('small', {}, note) : null)));
+  }
+  const ar = el('select', {});
+  for (const [v, l] of ASPECTS) ar.append(el('option', { value: v }, l));
+  ar.value = i.aspect || '43';
+  ar.onchange = () => deckEdit({ kind: 'aspect', ratio: ar.value }, 'Aspect ratio');
+  th.append(el('label', { class: 'dp-row' }, el('span', { class: 'dp-lab' }, 'Aspect ratio'), el('span', { class: 'dp-in' }, ar)));
+  P.append(th);
+
+  // colours
+  const co = el('section', { class: 'dp-sec' }, el('h4', {}, 'Colours'));
+  if (i.colors.length) {
+    co.append(el('p', { class: 'dp-hint' }, 'The deck\'s own colours: changing one changes everything that uses it.'));
+    const grid = el('div', { class: 'dp-colors' });
+    for (const c of i.colors) {
+      const pick = el('input', { type: 'color', value: '#' + c.hex });
+      pick.onchange = () => deckEdit({ kind: 'color', name: c.name, hex: pick.value.slice(1) }, `Colour ${c.name}`);
+      grid.append(el('label', { class: 'dp-color', title: c.main ? `${c.name}, defined here` : `${c.name}, from ${c.file} (changing it adds an override here)` }, pick, el('span', {}, c.name)));
+    }
+    co.append(grid);
+  }
+  co.append(el('p', { class: 'dp-hint' }, 'Beamer\'s colours (empty: from the theme).'));
+  for (const sl of i.slots) {
+    const row = el('div', { class: 'dp-row dp-slot' }, el('span', { class: 'dp-lab' }, sl.label));
+    const box = el('span', { class: 'dp-in dp-pair' });
+    for (const key of sl.keys) {
+      const v = sl.values[key];
+      const pick = el('input', { type: 'color', value: '#' + ((v && v.hex) || (key === 'bg' ? 'FFFFFF' : '000000')) });
+      if (!v) pick.classList.add('unset');
+      pick.title = v ? `${key}=${v.expr}${v.main ? '' : ` (${v.file})`}` : `${key}: from the theme`;
+      pick.onchange = () => deckEdit({ kind: 'slot', slot: sl.slot, key, hex: pick.value.slice(1) }, `${sl.label} ${key === 'fg' ? 'text' : 'background'}`);
+      box.append(el('span', { class: 'dp-k' }, key === 'fg' ? 'text' : 'bg'), pick);
+      if (v && v.main && new RegExp('^slidex').test(v.expr)) box.append(el('button', { type: 'button', class: 'dp-reset', title: 'Back to the theme\'s colour',
+        onclick: () => deckEdit({ kind: 'slot', slot: sl.slot, key, hex: null }, `${sl.label} ${key}`) }, '↺'));
+    }
+    row.append(box);
+    co.append(row);
+  }
+  P.append(co);
+
+  // header and footer
+  const hf = el('section', { class: 'dp-sec' }, el('h4', {}, 'Header and footer'));
+  const t = i.templates;
+  const foot = el('select', {});
+  for (const [v, l] of FOOTS) foot.append(el('option', { value: v }, l));
+  const fcur = !t.footline || !t.footline.main ? 'default' : t.footline.empty ? 'none' : t.footline.preset === 'frame number' ? 'number' : 'custom';
+  if (fcur === 'custom') foot.append(el('option', { value: 'custom' }, 'Custom (in the code)'));
+  foot.value = fcur;
+  foot.onchange = () => { if (foot.value !== 'custom') deckEdit({ kind: 'footline', preset: foot.value }, 'Footline'); };
+  hf.append(el('label', { class: 'dp-row' }, el('span', { class: 'dp-lab' }, 'Footline'), el('span', { class: 'dp-in' }, foot,
+    t.footline && !t.footline.main ? el('small', {}, `the theme default here is set in ${t.footline.file}`) : null)));
+  const head = el('input', { type: 'checkbox' });
+  head.checked = !(t.headline && t.headline.main && t.headline.empty);
+  head.onchange = () => deckEdit({ kind: 'headline', on: head.checked }, 'Headline');
+  hf.append(el('label', { class: 'dp-row dp-check' }, head, 'Headline (section navigation, if the theme has one)'));
+  const nav = el('input', { type: 'checkbox' });
+  nav.checked = !(t.nav && t.nav.empty);
+  nav.disabled = !!(t.nav && !t.nav.main && t.nav.empty);
+  nav.onchange = () => deckEdit({ kind: 'nav', on: nav.checked }, 'Navigation symbols');
+  hf.append(el('label', { class: 'dp-row dp-check', title: nav.disabled ? `turned off in ${t.nav.file}` : '' }, nav, 'Navigation symbols'));
+  P.append(hf);
+  P.scrollTop = keep;
+}
+$('btn-settings').onclick = () => toggleDeckPanel();
+
 /* --------------------------------------------------- click to edit text */
 const popEl = document.createElement('div'); popEl.className = 'text-pop'; popEl.hidden = true;
 const popTa = document.createElement('textarea'); popTa.spellcheck = true;
@@ -1586,6 +1724,7 @@ window.editorCommand = (name) => {
   else if (name === 'fontSmaller') setCodeSize(codeSize() - 1);
   else if (name === 'fontReset') setCodeSize(13);
   else if (name.startsWith('theme:')) { setTheme(name.slice(6)); return; }
+  else if (name === 'deckSettings') { toggleDeckPanel(); return; }
   view.focus();
 };
 
