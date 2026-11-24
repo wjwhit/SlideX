@@ -676,6 +676,28 @@ async function runSelftest(pdf) {
     if (process.env.SLIDEX_SELFTEST_EVAL) {          // any check in the deck window
       console.log('SELFTEST eval', JSON.stringify(await js(process.env.SLIDEX_SELFTEST_EVAL)));
     }
+    if (process.env.SLIDEX_SELFTEST_OPENEDITOR) {    // smoke test: open the editor, report, close (no edits, no saves)
+      const errs = [];
+      app.on('web-contents-created', (ev, wc) => wc.on('console-message', (e2, level, msg) => { if (level >= 3) errs.push(msg); }));
+      process.on('uncaughtException', (err) => errs.push('main: ' + (err && err.stack || err)));
+      const before = new Set(BrowserWindow.getAllWindows().map((w) => w.id));
+      let opened = null;
+      try { opened = await openEditor(win); } catch (err) { errs.push('openEditor: ' + (err && err.stack || err)); }
+      await wait(12000);
+      const ew = BrowserWindow.getAllWindows().find((w) => !before.has(w.id));
+      let st = null;
+      if (ew && !ew.isDestroyed()) {
+        ew.webContents.on('console-message', (e2, level, msg) => { if (level >= 3) errs.push(msg); });
+        st = await ew.webContents.executeJavaScript(`({ status: document.getElementById('status').textContent, frames: S.frames.length,
+          preview: !!S.preview, dirty: S.dirty })`).catch((err) => 'eval failed: ' + err.message);
+        if (process.env.SLIDEX_SELFTEST_EDITJS) {      // a check of your own, run in the editor
+          const out = await ew.webContents.executeJavaScript(process.env.SLIDEX_SELFTEST_EDITJS).catch((err) => 'eval failed: ' + err.message);
+          console.log('SELFTEST editjs', JSON.stringify(out));
+        }
+        ew.destroy();
+      }
+      console.log('SELFTEST openeditor', JSON.stringify({ window: !!ew, destroyed: !ew, state: st, errors: errs }));
+    }
     if (process.env.SLIDEX_SELFTEST_EDITOR) {        // editor: compile a frame, cursor and hover lookups
       const before = new Set(BrowserWindow.getAllWindows().map((w) => w.id));
       await openEditor(win);

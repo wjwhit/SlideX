@@ -380,8 +380,7 @@ async function compileDeck(texPath) {
   args.push(path.basename(texPath));
   let r = await run('pdflatex', args, dir, 300000);
   const logPath = path.join(bdir, `${base}.log`);
-  // rerun when LaTeX asks, even after a non-fatal error (a missing figure still leaves a PDF)
-  if (fs.existsSync(path.join(bdir, `${base}.pdf`)) && /Rerun to get|undefined references|Label\(s\) may have changed/i.test(safeRead(logPath) || '')) {
+  if (r.code === 0 && /Rerun to get|undefined references|Label\(s\) may have changed/i.test(safeRead(logPath) || '')) {
     const r2 = await run('pdflatex', args, dir, 300000);
     r = { ...r2, ms: r.ms + r2.ms };
   }
