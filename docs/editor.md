@@ -97,6 +97,44 @@ resizing it again rescales that width.
 
 ![The width handle of a tcolorbox](images/resize-box.png)
 
+## Moving things
+
+Hover a figure, a box or a TikZ node: a round grip appears at its top-left
+corner. Drag it, and SlideX rewrites the source, in its own units. The
+example deck's "Placing things" slide has one of each:
+
+- **TikZ nodes placed `at (x,y)`**, in an overlay picture or a normal one, and
+  **`textpos` blocks** move anywhere. Their coordinates are rewritten, whether
+  they are numbers in the picture's own units (`at (0.5,0.4)` with page
+  coordinates, `at (3,2)` in centimetres) or an anchor with shifts
+  (`at ([xshift=4mm]current page.center)`). A node placed with an expression
+  (`$...$`, polar) is left for you to edit.
+
+  ![Dragging a TikZ node: the outline follows, with the distance](images/move-node.png)
+
+  Dropped, the node's shifts in the code change by what you dragged (here
+  `xshift=-32mm,yshift=-19mm` became `xshift=-47.9mm,yshift=-29.6mm`):
+
+  ![The node moved, and its new coordinates in the code](images/move-result.png)
+- **Other figures and boxes** move up or down. SlideX puts space above the
+  block and takes the same space away below it
+  (`\par\vspace{3.5mm}` ... `\par\vspace{-3.5mm}`), so only that block
+  moves, even in a vertically centred frame or column. Moving it again changes
+  the same two lines; back to zero removes them.
+
+  ![Dragging a figure down](images/move-figure.png)
+- **Column dividers**: hover the gap between two columns and drag the line to
+  shift width from one `\column` to the other (`0.5\linewidth | 0.5\linewidth`
+  becomes `0.45\linewidth | 0.55\linewidth`).
+
+  ![Dragging the divider between two columns, with the new widths](images/move-columns.png)
+
+Click a figure or box to select it; the arrow keys then move it by 1 mm
+(Shift: 5 mm, Option: 0.25 mm), and Esc deselects. The units come from the
+one-slide build itself (it reports the picture's unit vectors and the column
+width to its log), so the slide moves by what you dragged, within about a
+tenth of a millimetre.
+
 ## Captions
 
 Right-click a figure or a movie for **Add caption** (or **Edit caption**). A
@@ -131,6 +169,11 @@ whole-word matching.
 
 ![Find](images/find.png)
 
+## Light and dark
+
+View > Editor Theme switches the editor between light and dark, or follows
+macOS (the default). The choice is kept for the next time.
+
 ## Keys
 
 | Key | Action |
@@ -141,4 +184,5 @@ whole-word matching.
 | Cmd-E | switch between the editor and the deck |
 | Cmd-F | find and replace |
 | Cmd-= / Cmd-- / Cmd-0 | bigger, smaller, default code text size |
+| arrow keys | move the selected figure or box (Shift: 5 mm, Option: 0.25 mm) |
 | Cmd-Z / Shift-Cmd-Z | undo / redo |

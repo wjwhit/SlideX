@@ -162,6 +162,36 @@ module.exports = async function shots(ctx) {
   await wait(500);
   await shot(ew, 'find');
 
+  // moving things: a node, a figure and a column divider mid-drag, then a node moved
+  await ejs(`(() => { const c = document.querySelector('.cm-search [name=close]'); if (c) c.click(); })()`);
+  await toFrame('place', 2);
+  const drag = (pick, dx, dy) => ejs(`(async () => { await waitPreview(); const f = (${pick})(); if (!f) return false;
+    S.sel = f; drawFigs(f); await new Promise((r) => setTimeout(r, 50));
+    const g = moveEl.getBoundingClientRect();
+    moveEl.dispatchEvent(new MouseEvent('mousedown', { clientX: g.left + 6, clientY: g.top + 6, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: g.left + 6 + ${dx}, clientY: g.top + 6 + ${dy}, bubbles: true }));
+    return true; })()`);
+  const cancel = () => ejs(`(() => { moveDrag = null; colDrag = null; ghostEl.hidden = true; colLbl.textContent = ''; colEl.hidden = true; S.colHover = null; })()`);
+  await drag(`() => S.figs.find((f) => f.kind === 'node')`, -150, 95); await wait(200);
+  await shot(ew, 'move-node');
+  await cancel();
+  await drag(`() => S.figs.find((f) => f.kind === 'figure')`, 0, 45); await wait(200);
+  await shot(ew, 'move-figure');
+  await cancel();
+  await ejs(`(async () => { const c = S.cols[0]; if (!c) return; S.sel = null; drawFigs(null); S.colHover = c; colEl.hidden = false; placeCol(c, 0);
+    const g = colEl.getBoundingClientRect();
+    colEl.dispatchEvent(new MouseEvent('mousedown', { clientX: g.left + 4, clientY: g.top + 20, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: g.left + 4 + 55, clientY: g.top + 20, bubbles: true })); })()`);
+  await wait(200);
+  await shot(ew, 'move-columns');
+  await cancel();
+  await ejs(`(async () => { const f = S.figs.find((x) => x.kind === 'node'); S.sel = null;
+    await moveItem(f, -45, 30); await waitPreview(); gotoLine(f.line, false);
+    await new Promise((r) => setTimeout(r, 300)); await waitPreview();
+    const g = S.figs.find((x) => x.kind === 'node'); S.sel = g; drawFigs(g); })()`);
+  await wait(400);
+  await shot(ew, 'move-result');
+
   fs.rmSync(pdf + '.notes.json', { force: true });
   if (texOrig != null && fs.readFileSync(texPath, 'utf8') !== texOrig) fs.writeFileSync(texPath, texOrig);
   console.log('SHOTS done:', saved.length);

@@ -114,13 +114,20 @@ building it first if its PDF is missing or older.
 - **Click** the preview to show that line in the code; **double-click text** to
   edit its source line in place (Enter applies, Esc cancels). Enter at the end of an `\item`, here or in the code, starts the
   next item; Enter on an empty item ends the list.
+- **Move things on the preview:** drag a TikZ node or `textpos` block anywhere
+  (its coordinates are rewritten in their own units), a figure or box up or
+  down (a `\vspace` pair around it), or a column divider; arrow keys nudge the
+  selected item.
 - **Right-click a figure or movie** to add or edit its caption.
 - **Drop images, movies, GIFs or folders of frames** on the editor: they are
   copied into `./figures/` (GIFs and frames become mp4 with a poster, needs
   ffmpeg) and the `\includegraphics`/`\slidemovie` line is inserted.
 - **Find** (Cmd-F): a search bar over the code, with replace.
 - Edit menu: undo, redo, cut, copy, paste, select all, find. View menu:
-  bigger, smaller and default code text size (Cmd-=, Cmd--, Cmd-0).
+  bigger, smaller and default code text size (Cmd-=, Cmd--, Cmd-0), and the
+  editor theme (light, dark, or following macOS).
+- Errors and crashes are written to `~/Library/Logs/SlideX/slidex.log`
+  (Help > Show Log File); a window whose page crashes offers to reload.
 - LaTeX errors are listed under the preview and marked in the code.
 - Before the first save in a session, the original source is copied to
   `.slidex/backups/`. Builds go to `.slidex/` next to the deck.
