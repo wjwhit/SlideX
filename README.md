@@ -121,6 +121,12 @@ building it first if its PDF is missing or older.
   (its coordinates are rewritten in their own units), a figure or box up or
   down (a `\vspace` pair around it), or a column divider; arrow keys nudge the
   selected item.
+- **Slide sorter:** drag thumbnails to reorder frames (sections shown in the
+  strip), right-click to duplicate or delete, **+ New slide** from a layout
+  (bullets, two columns, figure, title, full-slide image, section, blank),
+  written in the deck's own frame style.
+- **Spelling:** misspelled words in the text get a red wavy underline (macOS's
+  spell checker; LaTeX commands, math, labels and paths are skipped).
 - **Deck settings** (toolbar **Deck…**, Shift-Cmd-D): title page fields, theme,
   colour and font themes, aspect ratio, the deck's colours and beamer's colour
   slots, footline, headline and navigation symbols, all written into the

@@ -1,5 +1,5 @@
 // Bridge for the viewer pages: open decks and toggle native full screen.
-const { contextBridge, ipcRenderer, webUtils } = require('electron');
+const { contextBridge, ipcRenderer, webUtils, webFrame } = require('electron');
 contextBridge.exposeInMainWorld('slidexApp', {
   open: (p) => ipcRenderer.invoke('slidex:open', p || null),
   fullscreen: () => ipcRenderer.invoke('slidex:fullscreen'),
@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('slidexEditor', {
   present: (key) => ipcRenderer.invoke('slidex-ed:present', key),
   onShown: (fn) => ipcRenderer.on('slidex-ed:shown', () => fn()),
   noteChange: (text, key, note) => ipcRenderer.invoke('slidex-ed:noteChange', text, key, note),
+  parseFrames: (text) => ipcRenderer.invoke('slidex-ed:parseFrames', text),
+  misspelled: (words) => words.filter((w) => { try { return webFrame.isWordMisspelled(w); } catch { return false; } }),   // the system spell checker
   onNote: (fn) => ipcRenderer.on('slidex-ed:note', (e, d) => fn(d)),
   setPref: (k, v) => ipcRenderer.invoke('slidex-ed:setPref', k, v),
   acceptDisk: (text) => ipcRenderer.invoke('slidex-ed:acceptDisk', text),
