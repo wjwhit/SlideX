@@ -1,63 +1,60 @@
-# Frames for the editor
+# Line-by-line highlighting
 
-[Documentation](README.md) > Frames for the editor
+[Documentation](README.md) > Line-by-line highlighting
 
 The [editor](editor.md) matches source lines and slide content through
-SyncTeX. Beamer collects a normal frame's whole body before typesetting it, so
-SyncTeX points everything on the slide at the frame's last line. Fragile frames
-are different: beamer writes their body to a `.vrb` file and reads it back
-line by line, so each line can be traced.
+SyncTeX. Beamer collects an ordinary frame's whole body before typesetting it,
+so SyncTeX would point everything on the slide at the frame's last line.
+Fragile frames are different: beamer writes their body to a `.vrb` file and
+reads it back line by line, so each line can be traced.
 
-The `slidexframes` package (in [`latex/`](../latex/slidexframes.sty), and
-bundled with SlideX) provides fragile frame environments that look exactly
-like ordinary frames:
+SlideX does this for you, in its own one-slide copy of the deck only: the frame
+you are editing is compiled as a fragile frame, ending its last paragraph
+inside the frame so the page comes out the same. The `.vrb` lines are then
+matched back to your source by their text. Your `.tex` is never changed and
+stays ordinary beamer, so it builds anywhere, and no package is needed. On a
+41-page research talk every frame compiled this way was pixel-identical to the
+full build.
+
+## Which frames
+
+Line by line:
+
+- `\begin{frame}[...]{...}` ... `\end{frame}`, when the `\begin` line holds the
+  whole header (options and title, nothing after them) and `\end{frame}`
+  stands alone on its line;
+- frames that are already fragile (`[fragile]`, or the `slidexframes`
+  environments below);
+- your own frame macros that only wrap a frame, like
+  ```latex
+  \newcommand{\cframe}[3]{\begin{frame}[#1]{#2} #3 \end{frame}}
+  ```
+  used as `\cframe{label=x}{Title}{` ... `}` with the closing brace alone on
+  its line. SlideX reads the macro's definition (in the deck, its `\input`
+  files or `.sty` files beside it) to make sure it is such a wrapper.
+
+Highlighted as a whole frame (they still compile and preview):
+
+- frames with an overlay specification on `\begin{frame}<...>`;
+- frames whose header spans lines, or whose `\end{frame}` shares its line;
+- macros that do more than wrap a frame, for example ones that store frames
+  for the appendix.
+
+## The `slidexframes` package (optional)
+
+[`latex/slidexframes.sty`](../latex/slidexframes.sty), bundled with SlideX,
+has fragile frame environments that look exactly like ordinary frames, and a
+backup-slide environment. You do not need it for the editor; use it if you
+like the shorthand, or want fragile frames (for `\verb`) everywhere.
 
 ```latex
 \usepackage{slidexframes}
-...
-\begin{sframe}{label=figure}{Figures, boxes and captions}
-	...
-\end{sframe}
-
-\begin{sframe}{}{}          % no options, no title
-	\titlepage
-\end{sframe}
-
-\begin{sbackup}{}{Backup: where the example media came from}
-	...
-\end{sbackup}
+\begin{sframe}{label=name}{Title}  ...  \end{sframe}    % a frame
+\begin{sbackup}{}{Title}           ...  \end{sbackup}   % a backup slide: unnumbered, starts the appendix
+\newslidexframe{wideframe}{plain}                       % your own kind
 ```
 
-- `sframe{<frame options>}{<title>}`: a frame. The options are beamer's
-  (`label=`, `t`, `c`, `plain`, ...); labels are optional.
-- `sbackup{<frame options>}{<title>}`: a backup slide, not counted in the frame
-  numbers. The first one starts the appendix, so put them last.
-- `\newslidexframe{<name>}{<extra frame options>}` defines your own, for
-  example `\newslidexframe{wideframe}{plain}`.
-
 Rules: the title goes on the `\begin` line, with nothing after it there, and
-`\end{sframe}` stands alone on its line.
-
-What the package changes, so the output stays identical to an ordinary frame:
-
-- each frame gets its own `.vrb` file, named after its `\begin` line
-  (`<job>-L<line>.vrb`), so SlideX can map every line (beamer would reuse one
-  file);
-- a mark after the title makes beamer copy the body verbatim from the `\begin`
-  line (otherwise leading comment lines are dropped);
-- the body's last paragraph ends before the frame's group closes.
-
-The package was checked on a 41-page research talk: converting every frame
-gave a pixel-identical PDF.
-
-Neither package is required. A plain beamer deck presents and edits as it
-is; add `slidexframes` for line-by-line highlighting, and
-[`slidemovie`](movies.md) only if the deck has movies or GIFs. SlideX adds its
-bundled `latex/` folder to `TEXINPUTS` when it compiles, so either package
-works in the editor without copying anything. To build the deck outside
-SlideX, copy the `.sty` files you use next to your `.tex`, or set `TEXINPUTS`
-as in the comment at the top of [`example/demo.tex`](../example/demo.tex).
-
-Plain `\begin{frame}[fragile]` frames, and ordinary frames, also compile and
-preview in the editor; the highlight then covers the whole frame instead of
-the line.
+`\end{sframe}` stands alone on its line. SlideX puts its bundled `latex/`
+folder on `TEXINPUTS` when it compiles; to build outside SlideX, copy the
+`.sty` next to your `.tex`.

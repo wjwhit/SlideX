@@ -245,15 +245,76 @@ function isNumbered(f, lines) {
   return !(f.name === 'appendixframe' || f.name === 'sbackup' || /noframenumbering/.test(lines[f.start - 1] || ''));
 }
 
-/* The one-slide source: same line numbers as `text`. */
-function oneSlideSource(text, frames, frame, firstPage) {
+/* Line-by-line SyncTeX needs a fragile frame (see the synctex section). In
+ * SlideX's one-slide copy only (the deck is never changed), an ordinary
+ * \begin{frame} or a wrapper macro like \cframe{opts}{title}{body} is turned
+ * into the environment below, on the same lines: a fragile frame (beamer's
+ * environment= option) that ends its last paragraph inside the frame, as
+ * slidexframes does, so the page is the same as the deck's. Skipped unless
+ * the \begin line holds the whole header and the closing line stands alone.
+ * Returns {pre, opts, title, post} for the \begin line, or null. */
+const COPY_ENV = 'slidexcopyframe';
+const COPY_DEF = `\\newenvironment{${COPY_ENV}}[2]{\\begin{frame}[environment=${COPY_ENV},fragile,#1]{#2}}{\\ifhmode\\par\\fi\\end{frame}}`;
+
+function frameHeader(line) {
+  const m = /\\begin\{frame\}/.exec(line);
+  if (!m) return null;
+  let p = m.index + m[0].length;
+  const ws = () => { while (line[p] === ' ' || line[p] === '\t') p++; };
+  ws();
+  if (line[p] === '<') return null;                 // overlay spec on the frame: leave it
+  let opts = '', title = '';
+  if (line[p] === '[') { const q = line.indexOf(']', p); if (q < 0) return null; opts = line.slice(p + 1, q); p = q + 1; ws(); }
+  if (line[p] === '{') { const q = matchBrace(line, p); if (q < 0) return null; title = line.slice(p + 1, q); p = q + 1; }
+  if (!/^\s*(%.*)?$/.test(line.slice(p))) return null;
+  return { pre: line.slice(0, m.index), opts, title, post: line.slice(p) };
+}
+
+function macroHeader(line, name, template) {
+  const m = new RegExp(String.raw`\\${name}\s*\{`).exec(line);
+  if (!m || template == null) return null;
+  const args = [];
+  let p = m.index + m[0].length - 1;
+  for (let k = 0; k < 2; k++) {
+    while (line[p] === ' ' || line[p] === '\t') p++;
+    if (line[p] !== '{') return null;
+    const q = matchBrace(line, p);
+    if (q < 0) return null;
+    args.push(line.slice(p + 1, q));
+    p = q + 1;
+  }
+  while (line[p] === ' ' || line[p] === '\t') p++;
+  if (line[p] !== '{' || !/^\s*(%.*)?$/.test(line.slice(p + 1))) return null;
+  const opts = template.replace(/#1/g, args[0]).replace(/^\s*,+|,+\s*$/g, '');
+  return { pre: line.slice(0, m.index), opts, title: args[1], post: line.slice(p + 1) };
+}
+
+/* The one-slide source: same line numbers as `text`. opts.fragile: make the
+ * frame fragile as above (sets opts.madeFragile); opts.macroTemplate: from
+ * frameMacroTemplate for a macro frame. */
+function oneSlideSource(text, frames, frame, firstPage, opts = {}) {
   const lines = text.split('\n');
+  if (opts.fragile && !frame.fragile) {
+    let h = null;
+    const endLine = lines[frame.end - 1] || '';
+    // beamer also takes the title (or options) from the next line: then leave the frame as it is
+    const nextArg = /^\s*[{[<]/.test(lines[frame.start] || '');
+    if (frame.kind === 'env' && frame.name === 'frame' && !nextArg && /^\s*\\end\{frame\}\s*$/.test(endLine)) h = frameHeader(lines[frame.start - 1]);
+    if (frame.kind === 'macro' && /^\s*\}\s*(%.*)?$/.test(endLine)) h = macroHeader(lines[frame.start - 1], frame.name, opts.macroTemplate);
+    if (h) {
+      lines[frame.start - 1] = `${COPY_DEF}${h.pre}\\begin{${COPY_ENV}}{${h.opts}}{${h.title}}${h.post}`;
+      lines[frame.end - 1] = `\\end{${COPY_ENV}}`;
+      opts.madeFragile = true;
+    }
+  }
   for (const g of frames) {
     if (g.index === frame.index) continue;
     for (let i = g.start - 1; i < g.end && i < lines.length; i++) lines[i] = '';
   }
   const fnum = frames.filter((g) => g.index < frame.index && isNumbered(g, text.split('\n'))).length;
-  let set = `\\setcounter{framenumber}{${fnum}}`;
+  // fastest zlib level: pages identical, compiles of image-heavy slides about
+  // 35% faster, files about the size of the deck's (level 0 would be 5-10x larger)
+  let set = `\\pdfcompresslevel=1 \\setcounter{framenumber}{${fnum}}`;
   if (firstPage != null) set += `\\setcounter{page}{${firstPage}}`;
   lines[frame.start - 1] = set + lines[frame.start - 1];
   return lines.join('\n');
@@ -270,12 +331,15 @@ async function compileFrame(texPath, frame, text, opts = {}) {
   const job = `${deckBase(texPath)}.slidex-${frame.label ? frame.label.replace(/[^\w.-]/g, '_') : '_frame' + (frame.index + 1)}`;
   const frames = opts.frames || parseFrames(text);
   const srcPath = path.join(bdir, `${job}.tex`);
-  fs.writeFileSync(srcPath, oneSlideSource(text, frames, frame, opts.firstPage));
+  const so = { fragile: opts.fragile !== false,
+    macroTemplate: frame.kind === 'macro' ? frameMacroTemplate(texPath, text, frame.name) : null };
+  fs.writeFileSync(srcPath, oneSlideSource(text, frames, frame, opts.firstPage, so));
   const fmt = await ensureFormat(texPath, text);
   const args = ['-interaction=nonstopmode', '-file-line-error', '-synctex=1', '-output-directory=.slidex', `-jobname=${job}`];
   if (fmt) args.push(`-fmt=.slidex/${fmt}`);
   args.push(path.relative(dir, srcPath));
   let hadMarks = prepareAux(texPath, job);
+  const t0 = Date.now() - 1000;
   let r = await run('pdflatex', args, dir);
   if (!hadMarks && /remember picture/.test(text.split('\n').slice(frame.start - 1, frame.end).join('\n'))) {
     hadMarks = prepareAux(texPath, job);                      // second pass for remember picture
@@ -284,7 +348,18 @@ async function compileFrame(texPath, frame, text, opts = {}) {
   const pdf = path.join(bdir, `${job}.pdf`);
   const log = safeRead(path.join(bdir, `${job}.log`)) || r.out;
   const errors = parseLog(log);
-  return { ok: r.code === 0 && fs.existsSync(pdf), pdf: fs.existsSync(pdf) ? pdf : null, srcPath,
+  const ok = r.code === 0 && fs.existsSync(pdf);
+  if (so.madeFragile && (!ok || errors.length)) {
+    // a frame that cannot be fragile (or a real error): try it as written;
+    // keep that result only if it is clean, else report the fragile run's
+    // errors, which carry exact lines
+    const plain = await compileFrame(texPath, frame, text, { ...opts, fragile: false });
+    if (plain.ok && !plain.errors.length) { cleanBuildDir(texPath, { keepJob: job, jobSince: t0 }); return { ...plain, ms: plain.ms + r.ms }; }
+    fs.writeFileSync(srcPath, oneSlideSource(text, frames, frame, opts.firstPage, { fragile: true, macroTemplate: so.macroTemplate }));
+    await run('pdflatex', args, dir);
+  }
+  if (opts.fragile !== false) cleanBuildDir(texPath, { keepJob: job, jobSince: t0 });
+  return { ok, pdf: fs.existsSync(pdf) ? pdf : null, srcPath, frameStart: frame.start, frameEnd: frame.end, madeFragile: !!so.madeFragile,
     synctex: path.join(bdir, `${job}.synctex.gz`), job, errors, ms: r.ms, key: frameKey(frame), name: frameName(frame), fmt: !!fmt, log };
 }
 
@@ -299,12 +374,14 @@ async function compileDeck(texPath) {
   const base = deckBase(texPath);
   const text = safeRead(texPath) || '';
   const fmt = await ensureFormat(texPath, text);
+  const t0 = Date.now() - 1000;
   const args = ['-interaction=nonstopmode', '-file-line-error', '-synctex=1', '-output-directory=.slidex', `-jobname=${base}`];
   if (fmt) args.push(`-fmt=.slidex/${fmt}`);
   args.push(path.basename(texPath));
   let r = await run('pdflatex', args, dir, 300000);
   const logPath = path.join(bdir, `${base}.log`);
-  if (r.code === 0 && /Rerun to get|undefined references|Label\(s\) may have changed/i.test(safeRead(logPath) || '')) {
+  // rerun when LaTeX asks, even after a non-fatal error (a missing figure still leaves a PDF)
+  if (fs.existsSync(path.join(bdir, `${base}.pdf`)) && /Rerun to get|undefined references|Label\(s\) may have changed/i.test(safeRead(logPath) || '')) {
     const r2 = await run('pdflatex', args, dir, 300000);
     r = { ...r2, ms: r.ms + r2.ms };
   }
@@ -316,7 +393,39 @@ async function compileDeck(texPath) {
     fs.renameSync(tmp, pdf);
   }
   const log = safeRead(logPath) || r.out;
+  if (r.code === 0) cleanBuildDir(texPath, { deckSince: t0 });
   return { ok: r.code === 0 && fs.existsSync(built), built: fs.existsSync(built), pdf, errors: parseLog(log), ms: r.ms, fmt: !!fmt, log };
+}
+
+/* .slidex/ housekeeping, for this deck's files only. Always kept: the full
+ * build (<deck>.aux, .nav, ... and its PDF: one-slide compiles and the slide
+ * strip read them), the precompiled preamble, and backups/.
+ *   deckSince: after a full build, remove the deck's .vrb files it did not
+ *              write (frames that moved or were deleted leave old ones).
+ *   keepJob:   remove every one-slide build except this one (null: all of
+ *              them; undefined: leave them alone), and the .vrb files of
+ *              keepJob older than jobSince. Other frames' .aux files that hold
+ *              remember-picture marks stay until the editor closes. */
+function cleanBuildDir(texPath, { deckSince = null, keepJob, jobSince = 0 } = {}) {
+  const bdir = buildDir(texPath);
+  const base = deckBase(texPath);
+  let names;
+  try { names = fs.readdirSync(bdir); } catch { return 0; }
+  let n = 0;
+  const rm = (f) => { try { fs.rmSync(path.join(bdir, f), { force: true }); n++; } catch { /* in use */ } };
+  const mtime = (f) => { try { return fs.statSync(path.join(bdir, f)).mtimeMs; } catch { return Infinity; } };
+  const deckVrb = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(-L\\d+|\\.\\d+)?\\.vrb$`);
+  for (const f of names) {
+    if (f.startsWith(`${base}.slidex-`)) {
+      if (keepJob === undefined) continue;
+      const mine = keepJob && (f.startsWith(`${keepJob}.`) || f.startsWith(`${keepJob}-L`));
+      // a frame's remember-picture marks (in its .aux) save a second pass next time
+      if (!mine && keepJob && f.endsWith('.aux') && /\\pgfsyspdfmark/.test(safeRead(path.join(bdir, f)) || '')) continue;
+      if (!mine) rm(f);
+      else if (/\.vrb$/.test(f) && mtime(f) < jobSince) rm(f);
+    } else if (deckSince != null && deckVrb.test(f) && mtime(f) < deckSince) rm(f);
+  }
+  return n;
 }
 
 function safeRead(p) { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } }
@@ -337,21 +446,63 @@ function saveSource(texPath, text) {
 }
 
 /* ------------------------------------------------------------- synctex */
-/* Fragile frame environments (see latex/README.md) write each frame body to
- * <job>-L<B>.vrb, where B is the line of \begin{cframe}: vrb line 1 is the
- * generated \frametitle (maps to B), vrb line n >= 2 is source line B + n - 2.
- * The one-slide sources in .slidex/ keep the deck's line numbers, so their
- * own records map to the deck's .tex unchanged. Plain [fragile] frames
- * (<job>.<n>.vrb, no fixed offset) map to nothing: lookups fall back to the
- * frame's closing line. */
-function vrbToSource(B, n) { return n <= 1 ? B : B + n - 2; }
+/* Fragile frames are written to a .vrb file and read back line by line, so
+ * SyncTeX records point into the .vrb. Its lines are the frame's source lines
+ * with a few changes (a generated \frametitle first, leading comment lines
+ * dropped, a closing line added), so each .vrb line is matched to the frame's
+ * source by its text, in order. Which frame: <job>-L<B>.vrb (slidexframes
+ * names it after the \begin line B), or, for a one-slide build, the frame it
+ * holds. A .vrb with no known frame maps to nothing. The one-slide sources in
+ * .slidex/ keep the deck's line numbers, so their own records map unchanged. */
+const vrbCache = new Map();
+function vrbTable(vrbPath, srcLines, B, E) {
+  let st;
+  try { st = fs.statSync(vrbPath); } catch { return null; }
+  const key = `${vrbPath}|${B}|${E}|${st.mtimeMs}`;
+  if (vrbCache.has(key)) return vrbCache.get(key);
+  const v = (safeRead(vrbPath) || '').split('\n');
+  const norm = (t) => (t || '').replace(/\s+/g, ' ').trim();
+  const map = [B];
+  let j = B;                                    // next source line to match
+  for (let n = 1; n <= v.length; n++) {
+    const t = norm(v[n - 1]);
+    let hit = null;
+    if (norm(srcLines[j - 1]) === t) hit = j;
+    else if (t) for (let k = j + 1; k <= E; k++) if (norm(srcLines[k - 1]) === t) { hit = k; break; }
+    if (hit != null) { map[n] = hit; j = hit + 1; } else map[n] = map[n - 1];
+  }
+  if (vrbCache.size > 200) vrbCache.clear();
+  vrbCache.set(key, map);
+  return map;
+}
 
-function remapFor(texPath, alias) {
+/* (vrb file, line) -> source line, or null. ctx: {texPath, srcPath (the
+ * one-slide copy, or the deck), frames, oneSlideStart, job}. */
+function vrbMapper(ctx) {
+  const dir = path.dirname(ctx.texPath);
+  let src = null;
+  return (file, n) => {
+    if (!/\.vrb$/.test(file || '')) return null;
+    const abs = path.resolve(dir, file);
+    let B = null;
+    const m = /-L(\d+)\.vrb$/.exec(abs);
+    if (m) B = +m[1];
+    else if (ctx.oneSlideStart && ctx.job && path.basename(abs).startsWith(ctx.job + '.')) B = ctx.oneSlideStart;
+    if (B == null) return null;
+    if (!src) src = (safeRead(ctx.srcPath || ctx.texPath) || '').split('\n');
+    const f = ctx.oneSlideEnd && B === ctx.oneSlideStart ? { end: ctx.oneSlideEnd } : frameAtLine(ctx.frames || parseFrames(src.join('\n')), B);
+    const t = vrbTable(abs, src, B, f ? f.end : src.length);
+    if (!t) return m ? vrbToSource(B, n) : null;
+    return t[Math.min(n, t.length - 1)];
+  };
+}
+function vrbToSource(B, n) { return n <= 1 ? B : B + n - 2; }   // sframe layout, when the .vrb is gone
+
+function remapFor(texPath, alias, ctx = {}) {
   const aliasReal = alias ? path.resolve(alias) : null;
+  const toSrc = vrbMapper({ texPath, srcPath: alias, ...ctx });
   return (r) => {
-    const m = /-L(\d+)\.vrb$/.exec(r.path);
-    if (m) return { path: texPath, line: vrbToSource(+m[1], r.line) };
-    if (/\.vrb$/.test(r.path)) return null;
+    if (/\.vrb$/.test(r.path)) { const line = toSrc(r.path, r.line); return line == null ? null : { path: texPath, line }; }
     if (aliasReal && path.resolve(path.dirname(texPath), r.path) === aliasReal) return { path: texPath, line: r.line };
     return { path: r.path, line: r.line };
   };
@@ -363,8 +514,10 @@ function sameFile(a, b) {
 
 async function loadSync(texPath, result, frame) {
   if (!synctexLib || !result.synctex || !fs.existsSync(result.synctex)) return null;
-  const st = await synctexLib.load(result.synctex, { remap: remapFor(texPath, result.srcPath) });
-  const exact = st.inputs.some((i) => /-L\d+\.vrb$/.test(i.path));
+  const ctx = { oneSlideStart: frame.start, oneSlideEnd: frame.end, job: result.job };
+  const st = await synctexLib.load(result.synctex, { remap: remapFor(texPath, result.srcPath, ctx) });
+  const toSrc = vrbMapper({ texPath, srcPath: result.srcPath, ...ctx });
+  const exact = st.inputs.some((i) => toSrc(i.path, 1) != null);
   const isMain = (p) => sameFile(path.resolve(path.dirname(texPath), p), texPath);
   return {
     st, exact,
@@ -383,7 +536,37 @@ async function loadSync(texPath, result, frame) {
 /* Deck page (0-based index) -> frame label (or "#<index>" for unlabelled
  * frames), from the full build's SyncTeX. Labels survive edits that shift
  * frame indices. */
+/* Deck page (0-based) -> frame index. Beamer's .nav lists each frame's pages
+ * in the order they are typeset, which is robust to line changes since the
+ * build (notes added, edits). Used when it has one entry per frame and agrees
+ * with SyncTeX wherever a fresh SyncTeX (not older than the .tex) maps a page;
+ * otherwise SyncTeX alone. */
+async function pageFrameIndices(texPath, frames) {
+  const viaSync = async () => (await syncPageFrames(texPath, frames)).map((k) => {
+    const f = k == null ? null : frames.find((g) => frameKey(g) === k);
+    return f ? f.index : null;
+  });
+  const nav = fullBuildFile(texPath, 'nav');
+  const ranges = nav ? [...(safeRead(nav) || '').matchAll(/\\beamer@framepages\s*\{(\d+)\}\{(\d+)\}/g)].map((m) => [+m[1], +m[2]]) : [];
+  if (ranges.length !== frames.length || !ranges.length) return viaSync();
+  const out = [];
+  ranges.forEach(([a, b], k) => { for (let pg = a; pg <= b; pg++) out[pg - 1] = k; });
+  const sync = fullBuildFile(texPath, 'synctex.gz');
+  let fresh = false;
+  try { fresh = !!sync && fs.statSync(sync).mtimeMs >= fs.statSync(texPath).mtimeMs; } catch { /* no build */ }
+  if (fresh) {
+    const s = await viaSync();
+    if (s.some((k, i) => k != null && out[i] != null && k !== out[i])) return s;
+  }
+  return Array.from(out, (k) => (k == null ? null : k));
+}
+
+/* Deck page (0-based) -> frame key (label, or "#<index>"), or null. */
 async function pageFrames(texPath, frames) {
+  return (await pageFrameIndices(texPath, frames)).map((k) => (k == null || !frames[k] ? null : frameKey(frames[k])));
+}
+
+async function syncPageFrames(texPath, frames) {
   const sync = fullBuildFile(texPath, 'synctex.gz');
   if (!synctexLib || !sync) return [];
   const st = await synctexLib.load(sync, { remap: remapFor(texPath) });
@@ -433,7 +616,8 @@ function listFiles(texPath, maxFiles = 4000) {
 
 /* Commands and environments the deck defines: its preamble, files it \input s
  * from its folder, and local .sty files. */
-function scanMacros(texPath, text) {
+/* The deck's text, its \input/\include files, and the .sty files beside it. */
+function deckSources(texPath, text) {
   const dir = path.dirname(texPath);
   const sources = [text];
   for (const m of text.matchAll(/\\(?:input|include)\{([^}]+)\}/g)) {
@@ -441,6 +625,29 @@ function scanMacros(texPath, text) {
     const t = safeRead(f); if (t) sources.push(t);
   }
   try { for (const f of fs.readdirSync(dir)) if (/\.sty$/.test(f)) { const t = safeRead(path.join(dir, f)); if (t) sources.push(t); } } catch { /* none */ }
+  return sources;
+}
+
+/* A frame macro that is only a wrapper, \newcommand{\name}[3]{\begin{frame}[..#1..]{#2} #3 \end{frame}}:
+ * returns its option template ('#1', '#1,noframenumbering', ...), else null. */
+function frameMacroTemplate(texPath, text, name) {
+  for (const t0 of deckSources(texPath, text)) {
+    const t = t0.replace(/(^|[^\\])%[^\n]*/g, '$1');
+    const re = new RegExp(String.raw`\\(?:re)?newcommand\*?\s*\{?\\${name}\}?\s*\[3\]\s*\{`, 'g');
+    const m = re.exec(t);
+    if (!m) continue;
+    const open = m.index + m[0].length - 1;
+    const close = matchBrace(t, open);
+    if (close < 0) return null;
+    const body = t.slice(open + 1, close).replace(/\s+/g, '');
+    const w = /^\\begin\{frame\}(?:\[([^\]]*)\])?\{#2\}#3\\end\{frame\}$/.exec(body);
+    return w ? (w[1] == null ? '' : w[1]) : null;
+  }
+  return null;
+}
+
+function scanMacros(texPath, text) {
+  const sources = deckSources(texPath, text);
   const cmds = new Map(), envs = new Map(), boxes = new Set();
   for (const t of sources) {
     for (const m of t.matchAll(/\\(?:re)?newcommand\*?\s*\{?\\([A-Za-z@]+)\}?\s*(?:\[(\d)\])?/g)) {
@@ -537,4 +744,4 @@ async function ensureSlidemovieSty(texPath, bundled) {
   return true;
 }
 
-module.exports = { importMedia, ensureSlidemovieSty, listFiles, scanMacros, findSource, parseFrames, frameAtLine, compileFrame, compileDeck, saveSource, loadSync, pageFrames, frameKey, parseLog, buildDir, vrbToSource };
+module.exports = { pageFrameIndices, cleanBuildDir, vrbMapper, importMedia, ensureSlidemovieSty, listFiles, scanMacros, findSource, parseFrames, frameAtLine, compileFrame, compileDeck, saveSource, loadSync, pageFrames, frameKey, parseLog, buildDir, vrbToSource };

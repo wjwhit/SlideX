@@ -1,9 +1,8 @@
 # SlideX documentation
 
 SlideX is a presenter for PDF slides, made for beamer decks, with a LaTeX
-editor built in. Any PDF presents as it is; the LaTeX packages are optional
-(`slidemovie` for movies, `slidexframes` for line-by-line highlighting in the
-editor). These pages walk through it with the example deck in
+editor built in. Any PDF presents as it is, and any beamer deck edits as it
+is; the `slidemovie` package is only for movies. These pages walk through it with the example deck in
 [`example/`](../example), so every screenshot can be reproduced.
 
 ![The editor: source on the left, the slide on the right, the line under the mouse highlighted in both](images/editor.png)
@@ -13,11 +12,11 @@ editor). These pages walk through it with the example deck in
 | [Presenting](presenting.md) | opening a deck, keys, the presenter window, laser, magnifier, slide panel, speaker notes |
 | [Movies and GIFs](movies.md) | the `slidemovie` package: putting a movie on a slide, options, posters, sending a deck |
 | [The editor](editor.md) | one-slide compiles, two-way highlighting, completion, resizing, captions, text editing, errors |
-| [Frames for the editor](frames.md) | the `slidexframes` package, and why line-by-line highlighting needs it |
+| [Line-by-line highlighting](frames.md) | how the editor matches source lines and slides, and which frames it can |
 
 ## Try it with the example deck
 
-The example deck has five slides and a backup slide: a movie that keeps
+The example deck is plain beamer, with five slides and a backup slide: a movie that keeps
 playing through overlay steps, three movies with different options, a figure
 next to a box, a box macro with an equation, and a backup slide.
 

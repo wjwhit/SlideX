@@ -7,7 +7,6 @@
 \setbeamertemplate{navigation symbols}{}
 \setbeamertemplate{footline}[frame number]
 \usepackage{slidemovie}   % movies and GIFs that play in SlideX
-\usepackage{slidexframes} % frames the SlideX editor maps line by line
 \usepackage{tcolorbox}
 
 \definecolor{ink}{RGB}{28,52,86}
@@ -28,26 +27,26 @@
 
 \begin{document}
 
-\begin{sframe}{label=title}{}
+\begin{frame}[label=title]
 	\titlepage
-\end{sframe}
+\end{frame}
 
 \section{Movies}
 
-\begin{sframe}{label=movie}{Movies play in place, and keep playing through overlays}
+\begin{frame}[label=movie]{Movies play in place, and keep playing through overlays}
 	\begin{columns}[c]
 		\column{0.56\linewidth}
 		\slidemovie[width=\linewidth]{media/clock.mp4}
 		\column{0.4\linewidth}
-		\begin{itemize} LIVEEDIT
+		\begin{itemize}
 			\item<1-> The PDF holds a still image; SlideX plays the movie on top
 			\item<2-> This step appears, and the movie does not restart
 			\item<3-> Hover the movie for a scrub bar
 		\end{itemize}
 	\end{columns}
-\end{sframe}
+\end{frame}
 
-\begin{sframe}{label=options}{Frames, GIFs and playback options}
+\begin{frame}[label=options]{Frames, GIFs and playback options}
 	\begin{columns}[T]
 		\column{0.31\linewidth}\centering
 		\slidemovie[width=\linewidth, rate=0.5]{media/sweep.mp4}\\[1mm]
@@ -59,11 +58,11 @@
 		\slidemovie[width=\linewidth, noautoplay, noloop, start=2, end=4, frame=last]{media/clock.mp4}\\[1mm]
 		{\small click to play 2--4 s; the PDF shows 4 s}
 	\end{columns}
-\end{sframe}
+\end{frame}
 
 \section{Figures}
 
-\begin{sframe}{label=figure}{Figures, boxes and captions}
+\begin{frame}[label=figure]{Figures, boxes and captions}
 	\begin{columns}[c]
 		\column{0.5\linewidth}\centering
 		\includegraphics[width=0.95\linewidth]{figures/growth.pdf}\\
@@ -77,9 +76,9 @@
 			\end{itemize}
 		\end{tcolorbox}
 	\end{columns}
-\end{sframe}
+\end{frame}
 
-\begin{sframe}{label=keybox}{A box macro, and an equation}
+\begin{frame}[label=keybox]{A box macro, and an equation}
 	\keybox{In SlideX, \textbf{double-click any text} on the preview to edit it in place.}
 	\vspace{4mm}
 	\begin{itemize}
@@ -87,17 +86,18 @@
 		\item<2-> so its growth rate is
 			\[ \sigma = \frac{1}{\zeta}\,\frac{d\zeta}{dt}. \]
 	\end{itemize}
-\end{sframe}
+\end{frame}
 
-\section{Backup}
+\appendix
+\section*{Backup}
 
-\begin{sbackup}{label=backup}{Backup: where the example media came from}
+\begin{frame}[label=backup,noframenumbering]{Backup: where the example media came from}
 	\begin{itemize}
 		\item \texttt{media/clock.mp4}: ffmpeg's \texttt{testsrc2} test pattern
 		\item \texttt{media/sweep.mp4}: 24 PNG frames, made with \texttt{slidemovie.py encode}
 		\item \texttt{media/fractal.gif}: ffmpeg's \texttt{mandelbrot} source
 		\item \texttt{figures/growth.pdf}: \texttt{figures/make\_figures.py}
 	\end{itemize}
-\end{sbackup}
+\end{frame}
 
 \end{document}

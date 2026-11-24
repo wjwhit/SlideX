@@ -1,7 +1,7 @@
 {
   "name": "slidex",
   "productName": "SlideX",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "PDF slide presenter for beamer decks: movies that play, presenter view, laser, magnifier, speaker notes",
   "main": "main.js",
   "private": true,

@@ -33,14 +33,21 @@ typing.
 How a slide is fast: SlideX writes a one-slide copy of the document to
 `.slidex/` (the preamble and everything between frames kept, the other frames
 blanked so line numbers match, the frame and page counters set as in the
-deck), with the preamble precompiled. The result is pixel-identical to the
-same page of the full build. Builds never write next to your `.tex` except
-the deck's PDF.
+deck), with the preamble precompiled, and compresses the preview with zlib's
+fastest level (image-heavy slides compile about a third faster). The result is
+pixel-identical to the same page of the full build: checked on every frame of
+a 41-page research talk. Builds never write next to your `.tex` except the
+deck's PDF.
 
-Any frame can be compiled on its own, with or without a `label=`. For the
-source and the slide to be matched **line by line**, frames should be fragile
-environments such as `sframe` from the [`slidexframes` package](frames.md);
-other frames compile too, with the whole frame highlighted instead of the line.
+Any frame can be compiled on its own, with or without a `label=`, and
+ordinary `\begin{frame}` frames are matched to the source **line by line**
+(see [Line-by-line highlighting](frames.md) for how, and for the few frames
+that are highlighted as a whole).
+
+`.slidex/` holds only what is in use: the full build, the precompiled
+preamble, backups, and the build of the slide you are on. Older one-slide
+builds and stale `.vrb` files are removed as you go, and the rest of the
+one-slide files when the editor closes.
 
 ## Two-way highlighting
 

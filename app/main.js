@@ -7,6 +7,7 @@
 'use strict';
 const { app, BrowserWindow, Menu, dialog, ipcMain, screen, shell } = require('electron');
 const editor = require('./editor');
+const notesLib = require('./notes');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -350,6 +351,8 @@ async function openEditor(deckWin) {
   st.id = win.webContents.id;
   win.on('closed', () => {                       // editing over: bring the deck back
     editors.delete(st.id);
+    // one-slide builds are only for the open editor (unless another editor has this deck)
+    if (![...editors.values()].some((o) => o.texPath === st.texPath)) editor.cleanBuildDir(st.texPath, { keepJob: null });
     if (st.deckWin && !st.deckWin.isDestroyed() && !st.deckWin.isVisible()) showDeck(st.deckWin);
   });
   win.once('ready-to-show', () => { hideDeck(deckWin).then(() => { if (!win.isDestroyed() && win.isVisible()) win.focus(); }); });   // edit mode: only the editor
@@ -378,11 +381,12 @@ function reloadDeckWindows(pdfPath) {
 }
 
 /* Errors in the single-frame .vrb copy point at the frame body's lines. */
-function mapErrors(st, errors) {
+function mapErrors(st, errors, r = {}) {
   const bdir = editor.buildDir(st.texPath);
+  const toSrc = editor.vrbMapper({ texPath: st.texPath, srcPath: r.srcPath, oneSlideStart: r.frameStart, oneSlideEnd: r.frameEnd, job: r.job });
   return errors.map((e) => {
-    const m = e.file && /-L(\d+)\.vrb$/.exec(e.file);
-    if (m) return { ...e, line: editor.vrbToSource(+m[1], e.line), file: st.texPath };
+    const vl = e.file && /\.vrb$/.test(e.file) ? toSrc(e.file, e.line) : null;
+    if (vl != null) return { ...e, line: vl, file: st.texPath };
     // the one-slide copy in .slidex/ keeps the deck's line numbers
     if (e.file && /\.tex$/.test(e.file) && path.resolve(path.dirname(st.texPath), e.file).startsWith(bdir + path.sep)) return { ...e, file: st.texPath };
     if (e.file && path.resolve(path.dirname(st.texPath), e.file) !== st.texPath) return { ...e, line: null, message: `${path.basename(e.file)}:${e.line}: ${e.message}` };
@@ -413,7 +417,7 @@ ipcMain.handle('slidex-ed:compileFrame', async (e, text, line) => {
     st.syncFrame = frame;
   }
   return { ok: r.ok, url: r.pdf ? urlFor(st.root, r.pdf) : null, key: r.key, name: r.name, exact: !!(st.sync && st.sync.exact),
-    frames: st.frames, errors: mapErrors(st, r.errors || []), ms: r.ms, fmt: r.fmt, log: tailLog(r.log) };
+    frames: st.frames, errors: mapErrors(st, r.errors || [], r), ms: r.ms, fmt: r.fmt, log: tailLog(r.log) };
 });
 
 ipcMain.handle('slidex-ed:compileDeck', async (e, text) => {
@@ -476,6 +480,59 @@ ipcMain.handle('slidex-ed:boxesForLine', (e, line, opts) => {
   return st.sync ? st.sync.boxesForLine(line, opts || {}) : [];
 });
 
+/* ------------------------------------------------------ speaker notes */
+/* Notes live in the deck's .tex as \note{...} (app/notes.js). The page ->
+ * frame map is taken when the presenter loads and kept: adding notes moves
+ * lines but not frames. Decks without a .tex keep <deck>.pdf.notes.json. */
+const noteMaps = new Map();       // pdf path -> {tex, pages}
+function deckPdfFor(sender) {
+  const w = BrowserWindow.fromWebContents(sender);
+  if (!w) return null;
+  if (deckOf.has(w.webContents.id)) return deckOf.get(w.webContents.id);
+  for (const [id, set] of deckChildren) if (set.has(w)) { const d = BrowserWindow.fromId(id); return d ? deckOf.get(d.webContents.id) : null; }
+  return null;
+}
+
+ipcMain.handle('slidex:notesLoad', async (e) => {
+  const pdfPath = deckPdfFor(e.sender);
+  const tex = pdfPath && editor.findSource(pdfPath);
+  if (!tex) return null;
+  try {
+    const text = fs.readFileSync(tex, 'utf8');
+    const frames = editor.parseFrames(text);
+    const pages = await editor.pageFrameIndices(tex, frames);
+    if (!pages.length) return null;
+    noteMaps.set(pdfPath, { tex, pages });
+    const notes = {};
+    for (const f of frames) { const n = notesLib.findNote(text, f); if (n && n.text.trim()) notes[f.index] = n.text; }
+    return { tex: path.basename(tex), pages, notes };
+  } catch { return null; }
+});
+
+ipcMain.handle('slidex:notesSave', async (e, page, note) => {
+  const pdfPath = deckPdfFor(e.sender);
+  const map = pdfPath && noteMaps.get(pdfPath);
+  if (!map) return { ok: false, error: 'no source' };
+  try {
+    const text = fs.readFileSync(map.tex, 'utf8');
+    const frames = editor.parseFrames(text);
+    const frame = frames[map.pages[page]];
+    if (!frame) return { ok: false, error: 'no frame for this page' };
+    const next = notesLib.setNote(text, frame, note);
+    if (next !== text) editor.saveSource(map.tex, next);
+    for (const st of editors.values()) {            // an open editor gets the same change in its buffer
+      if (st.texPath === map.tex && !st.win.isDestroyed()) st.win.webContents.send('slidex-ed:note', { key: editor.frameKey(frame), note });
+    }
+    return { ok: true };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('slidex-ed:noteChange', (e, text, key, note) => {
+  const frame = editor.parseFrames(text).find((f) => editor.frameKey(f) === key);
+  if (!frame) return null;
+  try { return notesLib.change(text, notesLib.setNote(text, frame, note)); } catch { return null; }
+});
+
 ipcMain.handle('slidex:edit', (e) => openEditor(BrowserWindow.fromWebContents(e.sender)));
 
 /* Page -> frame key for a deck window's slide panel, from the deck's source
@@ -486,7 +543,7 @@ ipcMain.handle('slidex:frameGroups', async (e) => {
   if (!tex) return null;
   try {
     const frames = editor.parseFrames(fs.readFileSync(tex, 'utf8'));
-    const keys = await editor.pageFrames(tex, frames);
+    const keys = await editor.pageFrames(tex, frames);       // from beamer's .nav, else SyncTeX
     return keys.length ? keys : null;
   } catch { return null; }
 });
@@ -624,6 +681,8 @@ async function runSelftest(pdf) {
       await openEditor(win);
       const ew = BrowserWindow.getAllWindows().find((w) => !before.has(w.id));
       if (!ew) throw new Error('editor did not open');
+      const testTex = editors.get(ew.webContents.id).texPath;
+      const testTexText = fs.readFileSync(testTex, 'utf8');     // put back exactly at the end
       const ejs = (code) => ew.webContents.executeJavaScript(code);
       for (let i = 0; i < 60; i++) { await wait(500); if (await ejs('!!(window.S && S.preview && S.preview.page)')) break; }
       const label = process.env.SLIDEX_SELFTEST_EDITOR;
@@ -868,9 +927,12 @@ async function runSelftest(pdf) {
         for (let i = 0; i < 80 && ew.isVisible(); i++) await wait(250);
         console.log('SELFTEST compile and present', JSON.stringify({ ...vis(), seconds: ((Date.now() - t0) / 1000).toFixed(1) }));
         await openEditor(win); await wait(800);
-        await ejs(`view.dispatch({ changes: { from: view.state.doc.line(cursorLine()).to - 2, to: view.state.doc.line(cursorLine()).to } }); save()`);   // undo the test edit on disk
         await wait(500);
         ew.close(); await wait(800);
+        if (fs.readFileSync(testTex, 'utf8') !== testTexText) {          // Compile & Present saved the test edits
+          fs.writeFileSync(testTex, testTexText);
+          console.log('SELFTEST restored', testTex);
+        }
         console.log('SELFTEST editor closed', JSON.stringify({ deck: win.isVisible() }));
         win.hide();
         for (const c of deckChildren.get(win.id) || []) if (!c.isDestroyed()) c.close();
@@ -888,6 +950,29 @@ async function runSelftest(pdf) {
       })()`);
       console.log('SELFTEST notes', JSON.stringify(back));
       if (!had) fs.rmSync(nf, { force: true });
+    }
+    if (process.env.SLIDEX_SELFTEST_TEXNOTES) {   // notes in the .tex, from the presenter, with the editor open
+      const tex = editor.findSource(path.resolve(pdf));
+      const orig = fs.readFileSync(tex, 'utf8');
+      const nf = path.resolve(pdf) + '.notes.json';
+      fs.writeFileSync(nf, JSON.stringify({ version: 1, notes: { 'slide 3': 'from the json' } }));   // to be moved into the .tex
+      await openEditor(win); await wait(4000);
+      const ew = [...editors.values()].find((st) => st.texPath === tex).win;
+      await js(`slidex.goto(1)`); await wait(800);
+      await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))`); await wait(3000);
+      const pres = [...(deckChildren.get(win.id) || [])][0];
+      const pjs = (c) => pres.webContents.executeJavaScript(c);
+      const r1 = await pjs(`(async () => { await new Promise((r) => setTimeout(r, 500));
+        const m = document.getElementById('memo'); m.value = 'Typed 50% in the presenter'; m.dispatchEvent(new Event('input'));
+        await new Promise((r) => setTimeout(r, 1200));
+        return { status: document.getElementById('memo-status').textContent, label: document.getElementById('memo-label').textContent }; })()`);
+      const disk = fs.readFileSync(tex, 'utf8');
+      const buf = await ew.webContents.executeJavaScript(`({ text: view.state.doc.toString(), dirty: S.dirty })`);
+      const json = JSON.parse(fs.readFileSync(nf, 'utf8'));
+      console.log('SELFTEST texnotes', JSON.stringify({ ...r1, inTex: disk.includes('\\note{Typed 50\\% in the presenter}'),
+        movedFromJson: disk.includes('\\note{from the json}'), jsonLeft: json.notes, editorHasIt: buf.text === disk, editorDirty: buf.dirty }));
+      pres.close(); ew.destroy();
+      fs.writeFileSync(tex, orig); fs.rmSync(nf, { force: true });
     }
   } catch (e) {
     console.log('SELFTEST error', e && e.stack || e);

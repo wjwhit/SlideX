@@ -73,24 +73,17 @@ folder (`../figures/...`), pass `--root` with a folder that holds both.
 
 ## Frames for SlideX's editor mode
 
-The editor highlights source lines on the slide through SyncTeX, which only
-works line by line inside **fragile** frames: beamer collects a normal frame's
-body (or a macro argument like `\myframe{label}{title}{body}`) before typesetting
-it, so everything maps to the frame's last line. `slidexframes.sty`, in this
-folder, provides fragile frames that keep the usual look and add what the
-editor needs; they were checked to give a pixel-identical deck:
+Nothing is needed: SlideX's editor matches ordinary beamer frames to their
+source line by line (see [docs/frames.md](../docs/frames.md)).
+`slidexframes.sty`, in this folder, is an optional shorthand for fragile frames
+and backup slides:
 
 ```latex
 \usepackage{slidexframes}
-\begin{sframe}{label=name}{Title}  ...  \end{sframe}    % a frame; options and label optional
+\begin{sframe}{label=name}{Title}  ...  \end{sframe}    % a frame
 \begin{sbackup}{}{Title}           ...  \end{sbackup}   % a backup slide, unnumbered, in the appendix
 \newslidexframe{wideframe}{plain}                       % your own kind
 ```
-
-Rules: `\end{sframe}` alone on its line; the title on the `\begin` line.
-Plain `\begin{frame}[fragile]` frames also compile and preview, with
-frame-level highlighting. See [docs/frames.md](../docs/frames.md) for what the
-package changes.
 
 ## Why not `animate`, `media9` or `multimedia`?
 
